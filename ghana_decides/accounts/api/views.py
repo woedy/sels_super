@@ -15,9 +15,16 @@ from rest_framework.decorators import api_view, permission_classes, authenticati
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework.throttling import ScopedRateThrottle
 
-from accounts.api.serializers import UserRegistrationSerializer, PasswordResetSerializer, AllUsersSerializer, \
-    UserDetailSerializer
+from accounts.api.serializers import (
+    AllUsersSerializer,
+    CorrespondentTokenObtainPairSerializer,
+    PasswordResetSerializer,
+    UserDetailSerializer,
+    UserRegistrationSerializer,
+)
 from activities.models import AllActivity
 
 from ghana_decides_proj.utils import generate_email_token, generate_random_otp_code
@@ -789,9 +796,18 @@ def resend_email_verification(request):
 
 
 
+class CorrespondentTokenObtainPairView(TokenObtainPairView):
+    permission_classes = [AllowAny]
+    serializer_class = CorrespondentTokenObtainPairSerializer
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
+
 class UserLogin(APIView):
     authentication_classes = []
     permission_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         payload = {}
@@ -881,6 +897,8 @@ class UserLogin(APIView):
 class DataAdminLogin(APIView):
     authentication_classes = []
     permission_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         payload = {}
@@ -972,6 +990,8 @@ class DataAdminLogin(APIView):
 class PresenterLogin(APIView):
     authentication_classes = []
     permission_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         payload = {}

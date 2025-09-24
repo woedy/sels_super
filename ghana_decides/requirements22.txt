@@ -1,6 +1,7 @@
 asgiref
 Django
 djangorestframework
+djangorestframework-simplejwt
 Pillow
 pytz
 sqlparse
@@ -12,6 +13,8 @@ requests
 pyfcm
 django-cors-headers
 daphne
+django-ratelimit
+prometheus-client
 
 accelerate==0.28.0
 aiohttp==3.9.3

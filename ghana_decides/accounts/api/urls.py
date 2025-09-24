@@ -1,9 +1,11 @@
 from django.urls import path
 
+from rest_framework_simplejwt.views import TokenRefreshView
+
 from accounts.api.views import register_user, verify_user_email, resend_email_verification, UserLogin, \
     PasswordResetView, confirm_otp_password_view, resend_password_otp, new_password_reset_view, get_all_users, \
     get_user_detail, edit_user_view, delete_user_view, register_data_admin, DataAdminLogin, check_email_exist_view, \
-    register_correspondent, register_presenter, PresenterLogin
+    register_correspondent, register_presenter, PresenterLogin, CorrespondentTokenObtainPairView
 
 app_name = 'accounts'
 
@@ -16,6 +18,8 @@ urlpatterns = [
 
     path('verify-user-email/', verify_user_email, name="verify_user_email"),
     path('resend-email-verification/', resend_email_verification, name="resend_email_verification"),
+    path('login-correspondent/', CorrespondentTokenObtainPairView.as_view(), name="login_correspondent"),
+    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('login-user/', UserLogin.as_view(), name="login_user"),
     path('login-data-admin/', DataAdminLogin.as_view(), name="login_data_admin"),
     path('login-presenter/', PresenterLogin.as_view(), name="login_presenter"),

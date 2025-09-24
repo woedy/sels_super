@@ -5,8 +5,18 @@ from elections.api.election_view import add_election_presidential_candidate_view
     get_all_election_parliamentary_candidate_view, add_election_presidential_vote_view, get_all_election_presidential_marginal_constituency_view, get_all_election_presidential_swing_constituency_view, get_all_election_skirt_and_blouse_constituency_view, \
     get_election_2024_dashboard_view, add_election_parliamentary_vote_view, \
     add_election_presidential_candidate_list_view, add_election_parliamentary_candidate_list_view
-from elections.api.views import add_election_view, get_all_election_history_view, get_election_details, \
-    add_election_2024_view, get_regional_presidential_votes
+from elections.api.views import (
+    PublicMapPayloadView,
+    add_election_2024_view,
+    add_election_view,
+    get_all_election_history_view,
+    get_election_details,
+    get_regional_presidential_votes,
+)
+from elections.api.submission_views import (
+    PollingStationSubmissionAuditView,
+    SubmitPollingStationResultView,
+)
 
 app_name = 'elections'
 
@@ -47,6 +57,13 @@ urlpatterns = [
 
     path('get-regional-presidential-votes/', get_regional_presidential_votes,
          name="get_regional_presidential_votes"),
+
+    path('map/payload/', PublicMapPayloadView.as_view(), name='public_map_payload'),
+
+    path('submissions/polling-station/', SubmitPollingStationResultView.as_view(),
+         name='submit_polling_station_result'),
+    path('submissions/polling-station/audit-log/', PollingStationSubmissionAuditView.as_view(),
+         name='polling_station_submission_audit'),
 
 
 

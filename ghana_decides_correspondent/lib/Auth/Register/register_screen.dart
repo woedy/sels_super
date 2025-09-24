@@ -11,78 +11,37 @@ import 'package:ghd_correspondent/Components/generic_success_dialog_box.dart';
 import 'package:ghd_correspondent/Components/keyboard_utils.dart';
 import 'package:ghd_correspondent/Homepage/homepage_screen.dart';
 import 'package:ghd_correspondent/constants.dart';
-import 'package:http/http.dart' as http;
+
 import 'package:intl_phone_field/intl_phone_field.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-
+import 'package:ghd_correspondent/services/app_services.dart';
 
 Future<SignInModel> signInUser(String email, String password) async {
-
-  final response = await http.post(
-    Uri.parse(hostName + "accounts/login-user/"),
-    headers: <String, String>{
-      'Content-Type': 'application/json; charset=UTF-8',
-      'Accept': 'application/json'
-    },
-    body: jsonEncode({
-      "email": email,
-      "password": password,
-      "fcm_token": "dsfsdfdsfsdfds",
-    }),
+  final model = await AppServices.instance.authRepository.login(
+    email,
+    password,
   );
 
-
-  if (response.statusCode == 200) {
-    print(jsonDecode(response.body));
-    final result = json.decode(response.body);
-    if (result != null) {
-      print(result['data']['token'].toString());
-
-      await saveIDApiKey(result['data']['token'].toString());
-      await saveUserID(result['data']['user_id'].toString());
-
-
-      await saveUserData(result['data']);
-
-
-
-
+  final info = model.data;
+  if (info != null) {
+    final userId = info.userId;
+    if (userId != null && userId.isNotEmpty) {
+      await saveUserID(userId);
     }
-    return SignInModel.fromJson(jsonDecode(response.body));
-  } else if (response.statusCode == 422) {
-    print(jsonDecode(response.body));
-    return SignInModel.fromJson(jsonDecode(response.body));
-  }  else if (response.statusCode == 403) {
-    print(jsonDecode(response.body));
-    return SignInModel.fromJson(jsonDecode(response.body));
-  }   else if (response.statusCode == 400) {
-    print(jsonDecode(response.body));
-    return SignInModel.fromJson(jsonDecode(response.body));
-  }  else {
-
-    throw Exception('Failed to Sign In');
+    await saveUserData(info);
   }
+
+  return model;
 }
 
-Future<bool> saveIDApiKey(String apiKey) async {
-  SharedPreferences prefs = await SharedPreferences.getInstance();
-  prefs.setString("API_Key", apiKey);
-  return prefs.commit();
+Future<void> saveUserID(String userId) async {
+  await AppServices.instance.sharedPreferences.setString('USER_ID', userId);
 }
 
-Future<bool> saveUserID(String apiKey) async {
-  SharedPreferences prefs = await SharedPreferences.getInstance();
-  prefs.setString("USER_ID", apiKey);
-  return prefs.commit();
+Future<void> saveUserData(SignInData data) async {
+  final encoded = json.encode(data.toJson());
+  await AppServices.instance.sharedPreferences.setString('user_data', encoded);
 }
-
-
-Future<void> saveUserData(Map<String, dynamic> userData) async {
-  SharedPreferences prefs = await SharedPreferences.getInstance();
-  prefs.setString('user_data', json.encode(userData));
-}
-
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});

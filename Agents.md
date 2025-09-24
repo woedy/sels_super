@@ -1,232 +1,101 @@
-# Ghana Decides — Agents Overview
+# Smart Election Ledger System (SELS) — Agent Playbook
 
-This document is a living, high‑level overview of the Ghana Decides project for agents and contributors. It explains the repositories, architecture, key modules, runtime services, and how pieces fit together so you can quickly get context and make safe changes.
-
-## Quick Summary
-
-- Purpose: End‑to‑end election results and insights platform for Ghana.
-- Components: Django backend (APIs, WebSockets, tasks), React web frontend, Flutter mobile app, and AI assistants/tools.
-- Real‑time: WebSockets via Django Channels for live dashboards and map updates; Celery for background jobs.
-- Data: Regions, parties, candidates, elections, and votes at multiple aggregation levels.
+This playbook orients agents around our shared goal: delivering a Ghana-focused, CNN-style election "magic wall" that is polished enough to demo to investors. SELS spans three production applications—Django backend, React web presenter/admin client, and Flutter correspondent app—plus supporting AI tooling that we will activate after the core experience is battle ready.
 
 ---
 
-## Repository Layout
-
-- `ghana_decides/` — Django backend (APIs, Channels, Celery, Docker)
-- `ghana_decides_frontend/` — React (Create React App) frontend
-- `ghana_decides_correspondent/` — Flutter mobile app for correspondents
-
-Supporting/utility:
-- AI tools: `ghana_decides/sels/` (Streamlit + LangChain + Gemini) and `ghana_decides/sels/sels_ai.py` (LlamaIndex + Ollama)
-- Docker & infra: `ghana_decides/Dockerfile`, `ghana_decides/docker-compose.yml`
+## Architecture Snapshot
+- **Backend:** Django 5, DRF, Channels, Celery. Handles secure ingestion, hierarchical aggregation (polling station ➜ electoral area ➜ constituency ➜ region ➜ national), caching, and broadcast of standardized payloads to WebSocket groups.
+- **Web Client:** React (CRA) dashboards for the public map, presenter control room, and data admin tools. Connects to REST + WS backends with authenticated, resilient clients.
+- **Mobile Correspondent:** Flutter app for field reporters to submit authenticated results, media, and notes with offline support.
+- **Operations:** Docker Compose (Redis, Postgres, Daphne, Celery, Frontend build). Target deployment pairs Django behind a reverse proxy with observability and security hardening.
+- **AI Runway:** Streamlit/Gemini briefing tool and LlamaIndex/Ollama repo co-pilot live under `ghana_decides/sels/`. We defer further AI investment until the core ingestion-to-broadcast loop is production ready, but keep their integration points in mind.
 
 ---
 
-## Backend (Django)
-
-Key files:
-- Settings: `ghana_decides/ghana_decides_proj/settings.py`
-- URL routing: `ghana_decides/ghana_decides_proj/urls.py`
-- ASGI/Channels: `ghana_decides/ghana_decides_proj/asgi.py`, `ghana_decides/ghana_decides_proj/routing.py`
-- Celery tasks: `ghana_decides/ghana_decides_proj/tasks.py`
-- Requirements: `ghana_decides/requirements.txt`
-- Docker: `ghana_decides/Dockerfile`, `ghana_decides/docker-compose.yml`
-
-Installed domain apps (selected):
-- `accounts`, `user_profile`, `activities`
-- `regions` (regions, constituencies, electoral areas, polling stations)
-- `elections`, `candidates`, `parties`
-- `video_call` (signaling data), `chat`, `search`, `homepage`, `settings`
-
-### Authentication & Users
-- Custom user model: `accounts.User` (see `AUTH_USER_MODEL` in settings).
-- REST auth uses DRF TokenAuth today. Consider JWT for expiring tokens and mobile/web compatibility.
-- Accounts API: registration flows for users, data admins, presenters; email verification; password reset; login.
-  - Endpoints are mounted under `api/accounts/` (see `ghana_decides/accounts/api/urls.py`).
-
-### REST API Mount Points
-Mounting is in `ghana_decides/ghana_decides_proj/urls.py`:
-- `api/accounts/`
-- `api/regions/`
-- `api/parties/`
-- `api/candidates/`
-- `api/elections/`
-- `api/search/`
-- `api/settings/`
-
-Each app typically exposes `api/urls.py` and `api/views.py` with serializers.
-
-### WebSockets (Channels)
-- ASGI app: `ghana_decides/ghana_decides_proj/asgi.py`
-- Routing: `ghana_decides/ghana_decides_proj/routing.py`
-- Active endpoints:
-  - `ws/presenter-dashboard/` → presenter dashboard live updates
-  - `ws/live-map-consumer/` → live election map data
-- Example consumer: `ghana_decides/elections/api/consumers/live_map_consumers.py`
-- Chat example (in `chat/`) exists but is not wired in routing by default.
-
-### Background Tasks (Celery)
-- Celery app configured in settings (env‑driven). Broker/result via Redis.
-- Example task: send email (`ghana_decides/ghana_decides_proj/tasks.py`).
-
-### Data & Models (selected overview)
-- Regions & maps: `regions` app manages regions and map geometry (e.g., `RegionLayerCoordinate`) used to build GeoJSON served via WebSockets for the live map.
-- Elections: aggregates and per‑level votes (presidential/parliamentary) at polling station → electoral area → constituency → region → national.
-- Parties & Candidates: party metadata, colors/logos, candidate affiliations.
-- Accounts & Profiles: `accounts` + `user_profile` for roles (User, Data Admin, Presenter, Correspondent), profile data, activity feed (`activities`).
-- Video call signaling: `video_call/models.py` includes `Room`, `Offer`, `Answer`, and ICE candidates for WebRTC signaling.
-
-### Configuration & Env
-- The project uses environment variables for all secrets and deployment toggles.
-- Example env file: `ghana_decides/.env.example`
-- Important variables:
-  - `DJANGO_SECRET_KEY`, `DJANGO_DEBUG`, `DJANGO_ALLOWED_HOSTS`
-  - Database: `DB_ENGINE`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`
-  - Redis & Celery: `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`
-  - Email: `DJANGO_EMAIL_*`, `DJANGO_DEFAULT_FROM_EMAIL`
-  - CORS/CSRF: `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`
-  - Push: `FCM_SERVER_KEY`
-
-### Runtime
-- ASGI server: Daphne (see compose) for HTTP + WebSockets.
-- Channels configured with `channels_redis` and `CHANNEL_LAYERS`.
-- Static/media: configured in settings; ideally served by a reverse proxy in production.
+## Delivery Principles
+1. **Investor-ready polish:** Prioritize reliable data ingestion, live storytelling UI, and hardened infrastructure before layering advanced AI experiences.
+2. **Real-time integrity:** Every data change should be idempotent, audited, cached, and broadcast deterministically to all subscribed clients.
+3. **Security by default:** Tighten authentication, authorization, CORS/CSRF, and rate limits across REST and WebSockets prior to public demos.
+4. **Operational confidence:** Maintain scripted QA journeys, smoke tests, and observability so we can run rehearsals and demo loops on demand.
+5. **Future AI readiness:** Reserve integration seams (APIs, events, data stores) so the AI assistants can consume and augment trusted election data once the core system is stable.
 
 ---
 
-## Frontend (React — CRA)
-
-Key files:
-- Entry: `ghana_decides_frontend/src/index.js`
-- Routes: `ghana_decides_frontend/src/App.js` (many routes for results, dashboards, admin flows)
-- API/WS constants: `ghana_decides_frontend/src/Constants.js`
-- Env example: `ghana_decides_frontend/.env` (project‑specific; not committed by default)
-
-Highlights:
-- Rich route set for elections views (latest results, maps, top 20, summaries), data admin tools, and presenter dashboard.
-- Base URLs are env‑driven via `REACT_APP_BASE_URL`, `REACT_APP_BASE_URL_MEDIA`, `REACT_APP_BASE_URL_WS_URL` with fallbacks.
+## Active Workstreams
+- **Ingestion & Aggregation Platform:** Finalize polling-station submission APIs, provenance tracking, aggregation jobs, Redis caching, and signal/Celery-triggered broadcasts.
+- **Presenter & Public Experience:** Implement resilient REST/WS clients, drill-down filters, delta highlighting, loading/error states, and a scripted live demo sequence.
+- **Field Correspondent Reliability:** Ship secure login, tasking, result submission with media, offline queueing, and sync acknowledgements in the Flutter app.
+- **Operations & QA:** Lock down deployments, environment management, automated smoke/regression suites, load tests, and monitoring dashboards.
+- **AI Foundations (Deferred):** Keep data contracts and events well documented so the Streamlit and LlamaIndex agents can plug in without rework once green-lit.
 
 ---
 
-## Mobile (Flutter — Correspondent)
+## Unified Delivery Backlog
+The following backlog captures the core stories required to call SELS "investor-demo ready." Each story follows a user-focused narrative with measurable acceptance criteria. Mark them complete (`[x]`) as they are delivered.
 
-Key files:
-- App entry: `ghana_decides_correspondent/lib/main.dart`
-- Config/constants: `ghana_decides_correspondent/lib/constants.dart`
+- [x] **User Story (Data Admin):** "As a national data admin, I can submit polling-station results once and trust they roll up instantly to all geography levels."
+  *Acceptance Criteria*  
+  - REST endpoint validates tokens, station ownership, and idempotency (duplicate payloads do not double-count).  
+  - Submissions capture provenance (who/when/source) and persist raw + structured tallies.  
+  - Aggregation layer updates electoral area ➜ constituency ➜ region ➜ national totals within 10 seconds.  
+  - Redis caches map/presenter payloads and invalidates relevant keys on update.  
+  - Audit log API exposes last 20 submissions with status for QA.
 
-Highlights:
-- Oriented for portrait mobile use by correspondents (field data flow, registration, region selection).
-- Standard Flutter project structure with Android/iOS scaffolding.
+- [x] **User Story (Presenter):** "As a studio presenter, I receive continuous, authenticated updates with contextual deltas to narrate the election live."
+  *Acceptance Criteria*  
+  - Presenter dashboard establishes an authenticated WebSocket session with auto-reconnect and heartbeats.  
+  - Incoming payloads include leader, vote share delta, turnout change, and timestamp for the selected scope.  
+  - UI highlights new updates (e.g., badge or animation) and archives last five events.  
+  - Manual refresh is never required during a 60-minute run-through.  
+  - Role-based access control prevents non-presenter accounts from joining presenter channels.
 
----
+- [x] **User Story (Public Viewer):** "As a public viewer, I can explore the national map, drill into regions/constituencies, and see reliable status indicators."
+  *Acceptance Criteria*  
+  - GeoJSON layers load within 3 seconds with loading skeletons and graceful error states.  
+  - Drill-down controls (region ➜ constituency) update both map shading and summary cards without page reload.  
+  - Completion metrics (reporting %, last updated) reflect backend aggregation state.  
+  - WebSocket updates repaint affected polygons and summary cards within 5 seconds.  
+  - Accessibility checks (keyboard navigation, contrast) pass WCAG AA for key screens.
 
-## AI & Assistant Tools
+- [x] **User Story (Field Correspondent):** "As a correspondent in the field, I can capture results, photos, and notes even when offline and sync them securely once connected."
+  *Acceptance Criteria*  
+  - App enforces secure login (JWT/refresh) and stores tokens encrypted on device.  
+  - Result submission form supports vote tallies, turnout, photos, and optional voice/text notes.  
+  - Offline queue persists submissions locally and retries automatically when connectivity returns.  
+  - Users receive confirmation (success/failure with reason) for each submission.  
+  - API base URL is environment-driven; no hard-coded public IPs in release builds.
 
-### Streamlit + LangChain (SELS Election AI)
-- File: `ghana_decides/sels/sels_election_ai.py`
-- Purpose: Q&A over uploaded PDFs using Gemini embeddings and FAISS vector store.
-- Requires `GOOGLE_API_KEY` in environment. Saves `faiss_index` locally.
+- [x] **User Story (Operations Lead):** "As the operations lead, I can rehearse and monitor the full stack so we enter election night with confidence."
+  *Acceptance Criteria*  
+  - Docker/infra scripts spin up staging with seeded data, background workers, and sample correspondents.  
+  - Automated smoke suite covers REST ingest, WebSocket broadcast, presenter UI, public map, and correspondent submission.  
+  - Observability stack (logs, metrics, alerting) surfaces ingestion lag, WS disconnects, and error rates.  
+  - CORS/CSRF, rate limiting, and security headers enforced for all environments.  
+  - Runbook documents incident response, rollback, and data reconciliation steps.
 
-### LlamaIndex + Ollama (Local Agent)
-- File: `ghana_decides/sels/sels_ai.py`
-- Purpose: Local code/doc Q&A with a ReAct agent; loads docs from `./data`.
-- Models: `Ollama` (e.g., `phi3`, `codellama`), embeddings `BAAI/bge-m3`.
-- Useful during development for code navigation and API doc assistance.
+- [ ] **User Story (Product & Growth):** "As the product lead, I can deliver a compelling investor demo that showcases SELS’ differentiation."  
+  *Acceptance Criteria*  
+  - Scripted demo dataset highlights Ghana election scenarios (regional swings, turnout milestones).  
+  - Demo mode toggles presenter cues and stage lighting overlays without exposing admin tools.  
+  - Recording-ready walkthrough covers ingestion ➜ map swing ➜ presenter narrative in under 10 minutes.  
+  - Pitch collateral links to metrics (latency, ingestion throughput, uptime) exported from observability tools.  
+  - Roadmap slide reserves a lane for AI enhancements once core stories are complete.
 
----
-
-## Docker & Services
-
-Compose file: `ghana_decides/docker-compose.yml`
-- `redis` — Redis for Channels/Celery
-- `db` — Postgres (optional; SQLite supported when not configured)
-- `ghana_decides_app` — Django via Daphne ASGI (`gh_decides_proj.asgi:application`)
-  - Loads env from `ghana_decides/.env`
-- `ghana_decides_frontend` — React static server (serve build on port 5000 mapped to host 3000)
-- `celery`, `celery-beat` — background workers (env‑driven)
-
-Production recommendation:
-- Add Nginx reverse proxy (TLS, static/media, caching) in front of Daphne.
-- Collapse legacy compose variants and keep a single base + prod override.
-
-Dockerfiles:
-- Backend: `ghana_decides/Dockerfile` (Python 3.8‑alpine)
-- Frontend: `ghana_decides_frontend/Dockerfile` (Node 16, builds CRA, serves with `serve`)
-
----
-
-## Security & Operations Notes
-
-- Never commit secrets. Use env vars; rotate any values previously committed.
-- Production toggles:
-  - `DJANGO_DEBUG=False`
-  - `DJANGO_ALLOWED_HOSTS` set to your domains
-  - Lock down CORS/CSRF origins to required hosts only
-- Use Daphne/Uvicorn behind Nginx or an ingress for HTTPS, static/media, and caching.
-- Consider JWT for auth tokens and refresh/expiry semantics.
-- Review permissions on admin endpoints; avoid empty permission classes for sensitive actions.
-
-WebSockets security and groups
-- Use token/JWT middleware to authorize WS connections and topic subscriptions.
-- Standardize group names for targeting, e.g., `map:<year>:<level>:<scope[:name]>`, `presenter:<year>`.
+- [ ] **User Story (AI Integration Lead — Deferred):** "As the future AI integration lead, I can plug intelligence services into trusted data without reworking the core system."  
+  *Acceptance Criteria*  
+  - Documented data contracts (schemas, topics, events) for ingestion, aggregation, and broadcast layers.  
+  - API endpoints expose read-only snapshots for AI assistants with role-based scopes.  
+  - Feature flags or service hooks exist to call AI enrichment without blocking core flows.  
+  - Compliance review ensures AI services inherit audit trails and respect data governance.  
+  - Activation is explicitly sequenced after the above core stories reach "Done".
 
 ---
 
-## Local Development Quickstart
+## Ways of Working
+- Keep this file current when roadmap or priorities shift so every contributor shares the same investor-demo target.
+- Update corresponding checklists in repo directories when a story moves to "Done" to maintain alignment across docs.
+- Prefer small, reviewable PRs mapped to individual acceptance criteria; include demo notes or links in PR descriptions for investor-facing features.
+- Before shipping a new capability, rehearse it via the QA journeys in `QA_VISUAL_USER_JOURNEYS.md` and record outcomes.
 
-1) Backend
-- Copy and edit envs: `cp ghana_decides/.env.example ghana_decides/.env`
-- Run: `docker compose -f ghana_decides/docker-compose.yml up --build`
-- Django (Daphne): `http://localhost:5050`
-
-2) Frontend
-- From `ghana_decides_frontend/`: `yarn install && yarn start`
-- Configure `.env` with `REACT_APP_BASE_URL` etc., or rely on defaults.
-
-3) Mobile
-- Open `ghana_decides_correspondent/` in Android Studio or VS Code; run on device/emulator.
-
----
-
-## Conventions & Tips
-
-- API endpoints live under `api/<app>/` and are wired in `ghana_decides/ghana_decides_proj/urls.py`.
-- WebSockets are mapped in `ghana_decides/ghana_decides_proj/routing.py`.
-- For Channels scaling, ensure Redis is reachable and `CHANNEL_LAYERS` is configured via env.
-- Place new background jobs in `ghana_decides_proj/tasks.py` or per‑app `tasks.py` and decorate with `@shared_task`.
-- Keep secrets, domains, and ports env‑driven to support multiple deployments.
-
-Real‑time “Magic Wall” plan
-- Ingestion API: idempotent `POST` to accept polling station results; store provenance.
-- Aggregation service: compute rollups (PS→EA→Constituency→Region→National) on write; cache payloads in Redis.
-- Events: model signals trigger Celery task to recompute, cache, and broadcast to WS groups.
-- Map payloads: serve precomputed GeoJSON + leaders/completeness/last_updated.
-- Frontend WS: central client subscribes to `map` and `presenter` channels; MapView supports drill‑down filters; Presenter dashboard shows deltas.
-
----
-
-## Notable Paths (for quick navigation)
-
-- Backend settings: `ghana_decides/ghana_decides_proj/settings.py`
-- Backend URLs: `ghana_decides/ghana_decides_proj/urls.py`
-- Channels routing: `ghana_decides/ghana_decides_proj/routing.py`
-- Live map consumer: `ghana_decides/elections/api/consumers/live_map_consumers.py`
-- Accounts API URLs: `ghana_decides/accounts/api/urls.py`
-- React constants: `ghana_decides_frontend/src/Constants.js`
-- Flutter app entry: `ghana_decides_correspondent/lib/main.dart`
-- Docker compose: `ghana_decides/docker-compose.yml`
-
----
-
-## Roadmap Ideas
-
-- Switch DRF tokens to JWT with refresh/rotation.
-- Serve Django behind Nginx with TLS and static/media offload.
-- Harden CORS/CSRF and add security headers (CSP, HSTS) for production.
-- Consolidate and document data import/export flows for election results.
-- Add tests for critical APIs and WebSocket consumers.
-
----
-
-Keep this file updated when making structural changes so future agents and contributors have the right mental model.
+With this alignment, SELS will evolve from scaffold to a Ghana-ready, CNN-caliber election experience worthy of investor attention.

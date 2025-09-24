@@ -71,13 +71,13 @@ Legend: [ ] Planned  [~] In progress  [x] Done
 
 ## 11. Security & Ops
 - [x] Env-driven secrets and config
-- [ ] CORS/CSRF locked down for prod
+- [x] CORS/CSRF locked down for prod
 - [ ] Audit log for auth events
 - [ ] Healthcheck endpoint (DB/Redis)
 - [ ] Nginx + TLS reverse proxy in prod
  - [ ] WS auth middleware (token/JWT) and topic authorization
- - [ ] Rate limiting on auth and submission endpoints
- - [ ] Sentry/observability hooks (Django, Celery, Channels)
+ - [~] Rate limiting on auth and submission endpoints
+ - [~] Sentry/observability hooks (Django, Celery, Channels)
 
 ## 12. Testing & Tooling
 - [ ] Unit tests for serializers/views/consumers

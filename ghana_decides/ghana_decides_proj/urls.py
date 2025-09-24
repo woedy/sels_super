@@ -30,6 +30,7 @@ urlpatterns = [
     path('api/elections/', include('elections.api.urls', 'elections_api')),
     path('api/search/', include('search.api.urls', 'search_api')),
     path('api/settings/', include('settings.api.urls', 'settings_api')),
+    path('monitoring/', include('monitoring.urls')),
 ]
 
 if settings.DEBUG:

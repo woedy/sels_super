@@ -1,6 +1,7 @@
 import os
 import random
 
+from django.conf import settings
 from django.db import models
 from django.db.models.signals import pre_save, post_save
 
@@ -183,6 +184,30 @@ def pre_save_polling_station_id_receiver(sender, instance, *args, **kwargs):
         instance.polling_station_id = unique_polling_station_id_generator(instance)
 
 pre_save.connect(pre_save_polling_station_id_receiver, sender=PollingStation)
+
+
+class PollingStationAssignment(models.Model):
+    polling_station = models.ForeignKey(
+        PollingStation,
+        on_delete=models.CASCADE,
+        related_name='assignments',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='polling_station_assignments',
+    )
+    role = models.CharField(max_length=50, default='data_admin')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('polling_station', 'user')
+        ordering = ('polling_station', 'user')
+
+    def __str__(self):
+        return f"{self.user} -> {self.polling_station} ({self.role})"
 
 
 class PollingStationLayerCoordinate(models.Model):

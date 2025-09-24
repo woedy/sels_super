@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:ghd_correspondent/Auth/Login/models/sign_in_model.dart';
@@ -11,77 +10,18 @@ import 'package:ghd_correspondent/Components/generic_success_dialog_box.dart';
 import 'package:ghd_correspondent/Components/keyboard_utils.dart';
 import 'package:ghd_correspondent/Homepage/homepage_screen.dart';
 import 'package:ghd_correspondent/constants.dart';
-import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:ghd_correspondent/services/app_services.dart';
 
 
 
-Future<SignInModel> signInUser(String email, String password) async {
-
-  final response = await http.post(
-    Uri.parse(hostName + "accounts/login-user/"),
-    headers: <String, String>{
-      'Content-Type': 'application/json; charset=UTF-8',
-      'Accept': 'application/json'
-    },
-    body: jsonEncode({
-      "email": email,
-      "password": password,
-      "fcm_token": "dsfsdfdsfsdfds",
-    }),
-  );
-
-
-  if (response.statusCode == 200) {
-    print(jsonDecode(response.body));
-    final result = json.decode(response.body);
-    if (result != null) {
-      print(result['data']['token'].toString());
-
-      await saveIDApiKey(result['data']['token'].toString());
-      await saveUserID(result['data']['user_id'].toString());
-
-
-      await saveUserData(result['data']);
-
-
-
-
-    }
-    return SignInModel.fromJson(jsonDecode(response.body));
-  } else if (response.statusCode == 422) {
-    print(jsonDecode(response.body));
-    return SignInModel.fromJson(jsonDecode(response.body));
-  }  else if (response.statusCode == 403) {
-    print(jsonDecode(response.body));
-    return SignInModel.fromJson(jsonDecode(response.body));
-  }   else if (response.statusCode == 400) {
-    print(jsonDecode(response.body));
-    return SignInModel.fromJson(jsonDecode(response.body));
-  }  else {
-
-    throw Exception('Failed to Sign In');
-  }
+Future<void> saveUserID(String userId) async {
+  await AppServices.instance.sharedPreferences.setString('USER_ID', userId);
 }
 
-Future<bool> saveIDApiKey(String apiKey) async {
-  SharedPreferences prefs = await SharedPreferences.getInstance();
-  prefs.setString("API_Key", apiKey);
-  return prefs.commit();
+Future<void> saveUserData(SignInData data) async {
+  final encoded = json.encode(data.toJson());
+  await AppServices.instance.sharedPreferences.setString('user_data', encoded);
 }
-
-Future<bool> saveUserID(String apiKey) async {
-  SharedPreferences prefs = await SharedPreferences.getInstance();
-  prefs.setString("USER_ID", apiKey);
-  return prefs.commit();
-}
-
-
-Future<void> saveUserData(Map<String, dynamic> userData) async {
-  SharedPreferences prefs = await SharedPreferences.getInstance();
-  prefs.setString('user_data', json.encode(userData));
-}
-
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -104,6 +44,30 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return (_futureSignIn == null) ? buildColumn() : buildFutureBuilder();
+  }
+
+  void _startLogin() {
+    final form = _formKey.currentState;
+    if (form == null) {
+      return;
+    }
+    if (!form.validate()) {
+      return;
+    }
+    form.save();
+    FocusScope.of(context).unfocus();
+    final trimmedEmail = email?.trim();
+    final trimmedPassword = password?.trim();
+    if (trimmedEmail == null || trimmedPassword == null) {
+      return;
+    }
+
+    setState(() {
+      _futureSignIn = AppServices.instance.authRepository.login(
+        trimmedEmail,
+        trimmedPassword,
+      );
+    });
   }
 
 
@@ -338,12 +302,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                         height: 20,
                                       ),
                                       InkWell(
-                                        onTap: () {
-                                          Navigator.of(context).push(MaterialPageRoute(
-                                              builder: (BuildContext context) =>
-                                                  HomeScreen()));
-
-                                        },
+                                        onTap: _startLogin,
                                         child: Container(
                                           padding: EdgeInsets.all(20),
                                           //margin: EdgeInsets.all(10),
@@ -467,73 +426,89 @@ class _LoginScreenState extends State<LoginScreen> {
 
   FutureBuilder<SignInModel> buildFutureBuilder() {
     return FutureBuilder<SignInModel>(
-        future: _futureSignIn,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return LoadingDialogBox(text: 'Please Wait..',);
-          }
-          else if(snapshot.hasData) {
-
-            var data = snapshot.data!;
-
-            print("#########################");
-            //print(data.data!.token!);
-
-            if(data.message == "Successful") {
-
-              WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-                Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(builder: (context) => HomeScreen()),
-                );
-
-                showDialog(
-                    barrierDismissible: true,
-                    context: context,
-                    builder: (BuildContext context) {
-                      // Show the dialog
-                      return SuccessDialogBox(text: "Login Successful");
-                    }
-                );
-              });
-
-
-            }
-
-            else if (data.message == "Errors") {
-              String? errorKey = snapshot.data!.errors!.keys.firstWhere(
-                    (key) => key == "password" || key == "email",
-                orElse: () => null!,
-              );
-              if (errorKey != null) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-
-                  Navigator.pushReplacement(context,
-                      MaterialPageRoute(builder: (context) => LoginScreen())
-                  );
-
-                  String customErrorMessage = snapshot.data!.errors![errorKey]![0];
-                  showDialog(
-                      barrierDismissible: true,
-                      context: context,
-                      builder: (BuildContext context){
-                        return ErrorDialogBox(text: customErrorMessage);
-                      }
-                  );
-
-                });
-              }
-            }
-
-
-
-          }
-
-          return LoadingDialogBox(text: 'Please Wait..',);
-
-
+      future: _futureSignIn,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return LoadingDialogBox(text: 'Signing in...');
         }
+
+        if (snapshot.hasError) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            setState(() {
+              _futureSignIn = null;
+            });
+            showDialog(
+              barrierDismissible: true,
+              context: context,
+              builder: (context) => ErrorDialogBox(
+                text: snapshot.error.toString(),
+              ),
+            );
+          });
+          return LoadingDialogBox(text: 'Please Wait..');
+        }
+
+        if (snapshot.hasData) {
+          final signIn = snapshot.data!;
+          final info = signIn.data;
+
+          if (info != null) {
+            WidgetsBinding.instance.addPostFrameCallback((_) async {
+              if (info.userId != null) {
+                await saveUserID(info.userId!);
+              }
+              await saveUserData(info);
+              setState(() {
+                _futureSignIn = null;
+              });
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (context) => HomeScreen()),
+              );
+              showDialog(
+                barrierDismissible: true,
+                context: context,
+                builder: (BuildContext context) {
+                  return SuccessDialogBox(text: 'Login Successful');
+                },
+              );
+            });
+          } else {
+            final errorMessage = _extractErrorMessage(signIn) ??
+                'Unable to sign in. Please try again.';
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              setState(() {
+                _futureSignIn = null;
+              });
+              showDialog(
+                barrierDismissible: true,
+                context: context,
+                builder: (context) => ErrorDialogBox(text: errorMessage),
+              );
+            });
+          }
+
+          return LoadingDialogBox(text: 'Please Wait..');
+        }
+
+        return LoadingDialogBox(text: 'Please Wait..');
+      },
     );
+  }
+
+  String? _extractErrorMessage(SignInModel model) {
+    if (model.detail != null && model.detail!.isNotEmpty) {
+      return model.detail;
+    }
+    final errors = model.errors;
+    if (errors != null) {
+      for (final entry in errors.values) {
+        if (entry.isNotEmpty) {
+          return entry.first;
+        }
+      }
+    }
+    return null;
   }
 
 

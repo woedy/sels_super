@@ -1,468 +1,347 @@
-import { Link } from "react-router-dom";
-import konedu from "../../assets/images/konedu.png";
-import npp_logo from "../../assets/images/npp_logo.png";
-import ChartComponent from '../../components/ChartComponent';
-import SideNav from '../../components/SideNavigator';
-import { baseUrl, baseUrlMedia, baseWsUrl, userToken } from "../../Constants";
-import { motion } from "framer-motion"
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 
-import React, { useEffect, useRef, useState } from 'react';
-
-
-
+const numberFormatter = new Intl.NumberFormat('en-US');
+const percentFormatter = new Intl.NumberFormat('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 const PresenterDashboard = () => {
-    console.log(userToken);
+    const navigate = useNavigate();
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
 
-    const [firstCandidate, setFirstCandidate] = useState({});
-    const [secondCandidate, setSecondCandidate] = useState({});
-    const [incomingPresidentialVotes, setIncomingPresidentialVotes] = useState([]);
-    const [incomingParliamentaryVotes, setIncomingParliamentaryVotes] = useState([]);
-    const [presidentialResultChart, setPresidentialResultChart] = useState([]);
+    const [connectionStatus, setConnectionStatus] = useState('disconnected');
+    const [latestUpdate, setLatestUpdate] = useState(null);
+    const [history, setHistory] = useState([]);
+    const [highlightUpdate, setHighlightUpdate] = useState(false);
+    const [lastHeartbeat, setLastHeartbeat] = useState(null);
+    const [error, setError] = useState(null);
 
+    const [electionId, setElectionId] = useState(() => localStorage.getItem('presenterElectionId') || '');
+    const [scopeLevel, setScopeLevel] = useState('national');
+    const [scopeIdentifier, setScopeIdentifier] = useState('');
 
-    const listContainerRef = useRef(null);
-    const listContainerRef2 = useRef(null);
-
-
-
-    useEffect(() => {
-        // Scroll to the bottom of the list whenever incomingVotes changes
-        listContainerRef.current.scrollTo({
-            top: listContainerRef.current.scrollHeight,
-            behavior: 'smooth' // Optional: smoother scrolling animation
-        });
-    }, [incomingPresidentialVotes]);
-
-
-    
-    useEffect(() => {
-        // Scroll to the bottom of the list whenever incomingVotes changes
-        listContainerRef2.current.scrollTo({
-            top: listContainerRef2.current.scrollHeight,
-            behavior: 'smooth' // Optional: smoother scrolling animation
-        });
-    }, [incomingParliamentaryVotes]);
-
+    const socketRef = useRef(null);
+    const reconnectRef = useRef(null);
+    const heartbeatRef = useRef(null);
+    const manualCloseRef = useRef(false);
 
     useEffect(() => {
-        const socket = new WebSocket(process.env.REACT_APP_BASE_URL_WS_URL + 'ws/presenter-dashboard/');
+        if (!token) {
+            navigate('/login-presenter');
+        }
+    }, [navigate, token]);
+
+    useEffect(() => {
+        localStorage.setItem('presenterElectionId', electionId);
+    }, [electionId]);
+
+    const stopHeartbeat = useCallback(() => {
+        if (heartbeatRef.current) {
+            clearInterval(heartbeatRef.current);
+            heartbeatRef.current = null;
+        }
+    }, []);
+
+    const handleMessage = useCallback((event) => {
+        if (!event) return;
+        if (event.type === 'snapshot' || event.type === 'update') {
+            const payload = event.payload || {};
+            setLatestUpdate(payload);
+            setHistory(Array.isArray(payload.history) ? payload.history : []);
+            setHighlightUpdate(true);
+        } else if (event.type === 'heartbeat') {
+            setLastHeartbeat(event.timestamp);
+        } else if (event.type === 'error') {
+            setError(event.message || 'Unable to process realtime update.');
+        }
+    }, []);
+
+    const sendPing = useCallback(() => {
+        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({ action: 'ping' }));
+        }
+    }, []);
+
+    const subscribe = useCallback(() => {
+        if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        if (!electionId.trim()) {
+            setError('Enter an election ID to subscribe.');
+            return;
+        }
+        if (scopeLevel !== 'national' && !scopeIdentifier.trim()) {
+            setError('Provide an identifier for the selected scope.');
+            return;
+        }
+
+        const payload = {
+            action: 'subscribe',
+            election_id: electionId.trim(),
+            scope: scopeLevel,
+        };
+        if (scopeLevel !== 'national') {
+            payload.scope_id = scopeIdentifier.trim();
+        }
+        setError(null);
+        socketRef.current.send(JSON.stringify(payload));
+    }, [electionId, scopeIdentifier, scopeLevel]);
+
+    const connect = useCallback(() => {
+        if (!token) {
+            return;
+        }
+        manualCloseRef.current = false;
+        if (socketRef.current) {
+            socketRef.current.close();
+        }
+
+        const baseUrl = process.env.REACT_APP_BASE_URL_WS_URL || 'ws://localhost:8000/';
+        const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+        const url = `${normalizedBase}ws/presenter-dashboard/?token=${token}`;
+
+        const socket = new WebSocket(url);
+        socketRef.current = socket;
+        setConnectionStatus('connecting');
 
         socket.onopen = () => {
-            console.log('WebSocket connected');
-
-            const payload = {
-                command: 'get_presenter_dashboard_data'
-            };
-
-            socket.send(JSON.stringify(payload));
+            setConnectionStatus('connected');
+            subscribe();
+            stopHeartbeat();
+            heartbeatRef.current = setInterval(() => {
+                sendPing();
+            }, 25000);
         };
 
-
         socket.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.payload && data.payload.message === 'Successful') {
-                setFirstCandidate(data.payload.data.first_presidential_candidate);
-                setSecondCandidate(data.payload.data.second_presidential_candidate);
-                setIncomingPresidentialVotes(data.payload.data.incoming_presidential_votes);
-                setIncomingParliamentaryVotes(data.payload.data.incoming_parliamentary_votes);
-                setPresidentialResultChart(data.payload.data.presidential_result_chart);
-
-                console.log(data.payload.data.presidential_result_chart)
+            try {
+                const data = JSON.parse(event.data);
+                handleMessage(data);
+            } catch (err) {
+                console.error('Invalid websocket payload', err);
             }
         };
 
         socket.onclose = () => {
-            console.log('WebSocket disconnected');
+            setConnectionStatus('disconnected');
+            stopHeartbeat();
+            if (!manualCloseRef.current && !reconnectRef.current) {
+                reconnectRef.current = setTimeout(() => {
+                    reconnectRef.current = null;
+                    connect();
+                }, 4000);
+            }
         };
 
-        return () => {
+        socket.onerror = () => {
             socket.close();
         };
-    }, []);
+    }, [handleMessage, sendPing, stopHeartbeat, subscribe, token]);
 
+    useEffect(() => {
+        connect();
+        return () => {
+            manualCloseRef.current = true;
+            stopHeartbeat();
+            if (reconnectRef.current) {
+                clearTimeout(reconnectRef.current);
+                reconnectRef.current = null;
+            }
+            if (socketRef.current) {
+                socketRef.current.close();
+            }
+        };
+    }, [connect, stopHeartbeat]);
 
+    useEffect(() => {
+        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+            subscribe();
+        }
+    }, [subscribe]);
 
+    useEffect(() => {
+        if (!highlightUpdate) {
+            return undefined;
+        }
+        const timeout = setTimeout(() => setHighlightUpdate(false), 4000);
+        return () => clearTimeout(timeout);
+    }, [highlightUpdate]);
 
+    const leader = latestUpdate?.leader;
+    const runnerUp = latestUpdate?.runner_up;
+    const totals = latestUpdate?.totals || {};
 
+    const formattedTimestamp = useMemo(() => {
+        if (!latestUpdate?.timestamp) return '—';
+        try {
+            return new Date(latestUpdate.timestamp).toLocaleTimeString('en-GB', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+            });
+        } catch (err) {
+            return latestUpdate.timestamp;
+        }
+    }, [latestUpdate]);
+
+    const formatDelta = (value) => {
+        if (value === undefined || value === null) return '0.0 pts';
+        const prefix = value > 0 ? '+' : '';
+        return `${prefix}${percentFormatter.format(value)} pts`;
+    };
+
+    const renderHistory = () => {
+        if (!history.length) {
+            return <p className="text-sm text-white/60">No updates received yet.</p>;
+        }
+
+        return (
+            <ul className="space-y-2">
+                {history.map((entry, index) => {
+                    const entryTime = (() => {
+                        try {
+                            return new Date(entry.timestamp).toLocaleTimeString('en-GB', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit',
+                            });
+                        } catch (err) {
+                            return entry.timestamp;
+                        }
+                    })();
+                    return (
+                        <li
+                            key={`${entry.timestamp}-${index}`}
+                            className="rounded-lg bg-white/5 px-4 py-3"
+                        >
+                            <div className="flex justify-between text-xs text-white/70">
+                                <span>{index === 0 ? 'Latest' : entryTime}</span>
+                                <span>{formatDelta(entry.vote_share_delta)}</span>
+                            </div>
+                            <p className="mt-1 text-sm font-semibold text-white">
+                                {entry.leader?.name || '—'} leads with {numberFormatter.format(entry.leader?.total_votes || 0)} votes
+                            </p>
+                            <p className="text-xs text-white/60">
+                                Turnout change: {numberFormatter.format(entry.turnout_change || 0)} | Reporting {percentFormatter.format(entry.totals?.reporting_percent || 0)}%
+                            </p>
+                        </li>
+                    );
+                })}
+            </ul>
+        );
+    };
+
+    const statusBadgeClass = connectionStatus === 'connected'
+        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/60'
+        : connectionStatus === 'connecting'
+            ? 'bg-amber-500/20 text-amber-200 border border-amber-400/60'
+            : 'bg-rose-500/20 text-rose-200 border border-rose-400/60';
 
     return (
-        <div className="relative h-screen bg-cover bg-no-repeat bg-center w-full" style={{ backgroundImage: `url(${process.env.PUBLIC_URL}/ghana_decides_back.png)`, backgroundSize: 'cover' }}>
-            <div className="absolute inset-0 flex items-center justify-center w-full">
-                <div className="grid grid-cols-12 gap-5 mx-10 h-screen p-5 overflow-hidden w-full">
-
-                    <SideNav />
-
-                    <div className="col-span-8 bg-white bg-opacity-25 backdrop-blur-lg rounded-lg flex items-center justify-center h-full w-full" >
-                        <div className='w-full'>
-                            <div className=' text-center items-center justify-center'>
-                                <p className='text-white text-2xl font-bold' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>PRESIDENTIAL & PARLIAMENTARY</p>
-
-                                <p className='text-white text-lg uppercase' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>Provisional Result from all Polling Stations</p>
-
-
-                            </div>
-
-                            <div class="grid gap-2 grid-cols-1 grid-rows-1 mr-6 h-full">
-
-
-
-
-                                <Link to='/election-summary'>
-
-
-                                    <div class="grid gap-4 grid-cols-2 grid-rows-1">
-                                        {firstCandidate.first_presidential_candidate && (
-
-                                            <>
-
-                                                <div className="">
-
-
-
-                                                    <motion.div
-                                                        initial={{ opacity: 0, y: -20 }}
-                                                        animate={{ opacity: 1, y: 0 }}
-                                                        transition={{ duration: 1, ease: "easeOut", delay: 0.4 }}
-                                                        className="bg-black bg-opacity-25 backdrop-blur-lg rounded-lg flex items-center justify-center w-full h-60 m-3" style={{ boxShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>
-                                                        <div className="h-full w-full  relative">
-                                                            <div className="h-32 w-32 bg-black bg-opacity-25 absolute top-2 right-2/3 transform -translate-y-1/4 rounded-2xl flex justify-center items-center overflow-hidden">
-                                                                <div className=' '>
-                                                                    <img src={`${process.env.REACT_APP_BASE_URL}${firstCandidate.first_presidential_candidate.candidate.photo}`} alt="Image 1" className="rounded h-full w-full object-cover" />
-
-                                                                </div>
-
-
-
-                                                            </div>
-
-                                                            <div className={`grid grid-cols-4 gap-2 ${firstCandidate.first_presidential_candidate.total_votes > 0 ? 'border border-green-500 border-8' : ''} rounded h-full`}>
-    <div className="col-span-3 ml-[200px] mt-5">
-        <p className='text-white uppercase' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>{firstCandidate.first_presidential_candidate.candidate.first_name} {firstCandidate.first_presidential_candidate.candidate.middle_name}</p>
-        <p className='text-white text-2xl font-bold uppercase' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>{firstCandidate.first_presidential_candidate.candidate.last_name}</p>
-    </div>
-
-    <div className="col-span-1 flex justify-end items-center h-20 mt-3 pr-4">
-        <div className="rounded-2xl flex justify-center items-center overflow-hidden">
-            <img src={`${process.env.REACT_APP_BASE_URL}${firstCandidate.first_presidential_candidate.candidate.party.party_logo}`} alt="Party Logo" className="rounded object-cover" />
-        </div>
-    </div>
-
-    <div className="col-span-4 p-5">
-        <div className="grid grid-cols-2 gap-1 w-full">
-            <div className='col-span-1 justify-self-start'>
-                <p className='text-white text-[25px]' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>{firstCandidate.first_presidential_candidate.total_votes} votes </p>
-                <p className='text-white text-[30px] font-bold' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>{firstCandidate.first_presidential_candidate.total_votes_percent}%</p>
-            </div>
-
-            <div className='col-span-1 justify-self-end text-right mt-2'>
-                <p className='text-white text-[15px]' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>PARLIAMENTARY</p>
-                <p className='text-white text-2xl font-bold' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>{firstCandidate.first_presidential_candidate.parliamentary_seat} Seats</p>
-            </div>
-        </div>
-    </div>
-</div>
-
-
-                                                        </div>
-                                                    </motion.div>
-
-
-
-
-                                                    {firstCandidate.parliamentary_candidate ? (
-                                                        <motion.div
-                                                            initial={{ opacity: 0, y: -20 }}
-                                                            animate={{ opacity: 1, y: 0 }}
-                                                            transition={{ duration: 1, ease: "easeOut", delay: 0.4 }}
-                                                            className="bg-black bg-opacity-25 backdrop-blur-lg rounded-lg flex items-center justify-center p-3 w-full m-3"
-                                                            style={{ boxShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}
-                                                        >
-                                                            <div className="grid grid-cols-12 gap-3 justify-center items-center">
-                                                                <div className="col-span-2 flex justify-start">
-                                                                    <div className="h-20 w-20 rounded flex justify-center items-center overflow-hidden">
-                                                                        <img src={`${process.env.REACT_APP_BASE_URL}${firstCandidate.parliamentary_candidate.candidate.photo}`} alt="Candidate" className="rounded object-cover" />
-                                                                    </div>
-                                                                </div>
-                                                                <div className="col-span-4">
-                                                                    <div>
-                                                                        <p className='text-white uppercase'>{firstCandidate.parliamentary_candidate.candidate.first_name} {firstCandidate.parliamentary_candidate.candidate.middle_name}</p>
-                                                                        <p className='text-white font-bold uppercase'>{firstCandidate.parliamentary_candidate.candidate.last_name}</p>
-                                                                    </div>
-                                                                </div>
-                                                                <div className="col-span-4 flex items-center justify-center">
-                                                                    <div className='col-span-1'>
-                                                                        <p className='text-white text-sm'>Constituency</p>
-                                                                        <p className='text-white text-lg font-bold uppercase'>{firstCandidate.parliamentary_candidate.candidate.constituency.constituency_name}</p>
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        </motion.div>
-                                                    ) : null}
-                                                </div>
-
-
-                                            </>
-                                        )}
-
-
-
-
-                                        {secondCandidate.second_presidential_candidate && (
-
-                                            <>
-
-                                                <div>
-
-
-                                                    <motion.div
-                                                        initial={{ opacity: 0, y: -20 }}
-                                                        animate={{ opacity: 1, y: 0 }}
-                                                        transition={{ duration: 1, ease: "easeOut", delay: 0.4 }}
-                                                        className="bg-black bg-opacity-25 backdrop-blur-lg rounded-lg flex items-center justify-center w-full h-60 m-3" style={{ boxShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>
-                                                        <div className="h-full w-full  relative">
-                                                            <div className="h-32 w-32 bg-black bg-opacity-25 absolute top-2 left-2/3 transform -translate-y-1/4 rounded-2xl flex justify-center items-center overflow-hidden">
-                                                                <div className=' '>
-                                                                    <img src={`${process.env.REACT_APP_BASE_URL}${secondCandidate.second_presidential_candidate.candidate.photo}`} alt="Image 1" className="rounded h-full w-full object-cover" />
-
-                                                                </div>
-
-
-
-                                                            </div>
-                                                            <div className="grid grid-cols-4 gap-1 rounded h-full">
-                                                                <div className="h-20 w-20 mt-3 ml-3 rounded-2xl flex justify-start items-center overflow-hidden ml-4">
-                                                                    <img src={`${process.env.REACT_APP_BASE_URL}${secondCandidate.second_presidential_candidate.candidate.party.party_logo}`} alt="Image 1" className="rounded object-cover" />
-
-                                                                </div>
-                                                                <div className="col-span-3 ml- mt-5">
-                                                                    <p className='text-white uppercase' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>{secondCandidate.second_presidential_candidate.candidate.first_name} {secondCandidate.second_presidential_candidate.candidate.middle_name}</p>
-
-                                                                    <p className='text-white text-2xl font-bold uppercase' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>{secondCandidate.second_presidential_candidate.candidate.last_name}</p>
-
-
-                                                                </div>
-
-
-
-                                                                <div className="col-span-4 p-5 ">
-
-                                                                    <div className="grid grid-cols-2 gap-1 w-full">
-
-                                                                        <div className='col-span-1 justify-self-start'>
-                                                                            <p className='text-white text-[25px]' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>{secondCandidate.second_presidential_candidate.total_votes} votes </p>
-                                                                            <p className='text-white text-[30px] font-bold' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>{secondCandidate.second_presidential_candidate.total_votes_percent}%</p>
-
-
-                                                                        </div>
-
-
-                                                                        <div className='col-span-1 justify-self-end text-right mt-2'>
-
-                                                                            <p className='text-white text-[15px]' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>PARLIAMENTARY</p>
-                                                                            <p className='text-white text-2xl font-bold' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>{secondCandidate.second_presidential_candidate.parliamentary_seat} Seats</p>
-
-                                                                        </div>
-
-                                                                    </div>
-
-                                                                </div>
-
-
-
-
-                                                            </div>
-
-
-                                                        </div>
-
-
-                                                    </motion.div>
-
-
-                                                    {secondCandidate.parliamentary_candidate ? (
-                                                        <motion.div
-                                                            initial={{ opacity: 0, y: -20 }}
-                                                            animate={{ opacity: 1, y: 0 }}
-                                                            transition={{ duration: 1, ease: "easeOut", delay: 0.4 }}
-                                                            className="bg-black bg-opacity-25 backdrop-blur-lg rounded-lg flex items-center justify-center p-3 w-full m-3"
-                                                            style={{ boxShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}
-                                                        >
-                                                            <div className="grid grid-cols-12 gap-3 justify-center items-center">
-                                                                <div className="col-span-2 flex justify-start">
-                                                                    <div className="h-20 w-20 rounded flex justify-start items-center overflow-hidden">
-                                                                        <img src={`${process.env.REACT_APP_BASE_URL}${secondCandidate.parliamentary_candidate.candidate.photo}`} alt="Candidate" className="rounded object-cover" />
-                                                                    </div>
-                                                                </div>
-                                                                <div className="col-span-4">
-                                                                    <div>
-                                                                        <p className='text-white uppercase'>{secondCandidate.parliamentary_candidate.candidate.first_name} {secondCandidate.parliamentary_candidate.candidate.middle_name}</p>
-                                                                        <p className='text-white font-bold uppercase'>{secondCandidate.parliamentary_candidate.candidate.last_name}</p>
-                                                                    </div>
-                                                                </div>
-                                                                <div className="col-span-4 flex items-center justify-center">
-                                                                    <div className='col-span-1'>
-                                                                        <p className='text-white text-sm'>Constituency</p>
-                                                                        <p className='text-white text-lg font-bold uppercase'>{secondCandidate.parliamentary_candidate.candidate.constituency.constituency_name}</p>
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        </motion.div>
-                                                    ) : null}
-                                                </div>
-
-
-                                            </>
-                                        )}
-
-
-
-
-                                    </div>
-
-
-
-                                </Link>
-
-
-
-                                <div className="bg-black bg-opacity-25 backdrop-blur-lg rounded-lg flex text-center items-center justify-center p-3 w-full h m-3" style={{ boxShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>
-                                    <div className=''>
-                                        <p className='text-white text-2xl font-bold' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>2024 PRESIDENTIAL RESULTS</p>
-
-                                        <Link to='/election-summary-chart'>
-                                            <ChartComponent presidentialResultChart={presidentialResultChart} />
-                                        </Link>
-
-
-
-                                    </div>
-
-                                </div>
-
-
-
-                            </div>
-
-
-
-                        </div>
-
-
-
-
+        <div className="min-h-screen bg-slate-950 text-white">
+            <div className="mx-auto max-w-6xl px-6 py-10 space-y-8">
+                <header className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                    <div>
+                        <h1 className="text-3xl font-bold">Presenter Control Room</h1>
+                        <p className="text-sm text-white/60">Authenticated realtime feed for on-air narration.</p>
                     </div>
+                    <div className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm ${statusBadgeClass}`}>
+                        <span className="h-2 w-2 rounded-full bg-current"></span>
+                        {connectionStatus.toUpperCase()}
+                    </div>
+                </header>
 
+                <section className="rounded-xl border border-white/10 bg-white/5 p-6 backdrop-blur">
+                    <h2 className="text-lg font-semibold">Subscription</h2>
+                    <p className="text-sm text-white/60">Choose the election context and geography you want to narrate.</p>
+                    <div className="mt-4 grid gap-4 md:grid-cols-3">
+                        <label className="flex flex-col gap-2 text-sm">
+                            <span>Election ID</span>
+                            <input
+                                value={electionId}
+                                onChange={(event) => setElectionId(event.target.value)}
+                                placeholder="e.g. EL2024"
+                                className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white focus:border-emerald-400 focus:outline-none"
+                            />
+                        </label>
+                        <label className="flex flex-col gap-2 text-sm">
+                            <span>Scope</span>
+                            <select
+                                value={scopeLevel}
+                                onChange={(event) => setScopeLevel(event.target.value)}
+                                className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white focus:border-emerald-400 focus:outline-none"
+                            >
+                                <option value="national">National</option>
+                                <option value="region">Region</option>
+                                <option value="constituency">Constituency</option>
+                            </select>
+                        </label>
+                        <label className="flex flex-col gap-2 text-sm">
+                            <span>{scopeLevel === 'national' ? 'Scope ID (optional)' : 'Scope ID'}</span>
+                            <input
+                                value={scopeIdentifier}
+                                onChange={(event) => setScopeIdentifier(event.target.value)}
+                                placeholder={scopeLevel === 'region' ? 'Region ID' : scopeLevel === 'constituency' ? 'Constituency ID' : 'Leave blank for national'}
+                                className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white focus:border-emerald-400 focus:outline-none"
+                                disabled={scopeLevel === 'national'}
+                            />
+                        </label>
+                    </div>
+                    {error && (
+                        <p className="mt-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+                            {error}
+                        </p>
+                    )}
+                    <div className="mt-4 text-xs text-white/50">
+                        Last heartbeat: {lastHeartbeat ? new Date(lastHeartbeat).toLocaleTimeString() : '—'}
+                    </div>
+                </section>
 
-
-                    <div className="col-span-3 p-4 h-screen bg-white bg-opacity-25 backdrop-blur-lg rounded-lg flex items-center justify-center">
-                        <div className="flex flex-col w-full h-full">
-
-                            <p className='text-white font-bold text-center mb-1' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>PRESIDENTIAL REALTIME</p>
-
-                            <div className="flex w-full h-1/2">
-                                <div className="w-full h-full overflow-auto hide-scrollbar" ref={listContainerRef}>
-                                    {incomingPresidentialVotes && [...incomingPresidentialVotes].map((incomingVote, index) => (
-                                        <motion.div key={index}
-                                            initial={{ opacity: 0, y: -20 }}
-                                            animate={{ opacity: 1, y: 0 }}
-                                            transition={{ duration: 1, ease: "easeOut", delay: 0.4 }}
-                                            className="bg-green-500 bg-opacity-25 backdrop-blur-lg rounded-lg flex items-center justify-center p-3 w-full mb-3" style={{ boxShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>
-                                            {incomingVote.candidate && (
-                                                <div className="grid grid-cols-5 gap-1">
-                                                    <div className="col-span-1">
-                                                        <div className="h-15 w-15 rounded-2xl flex justify-center items-center overflow-hidden">
-                                                            <img src={`${process.env.REACT_APP_BASE_URL}${incomingVote.candidate.candidate.photo}`} alt="Candidate" className="rounded object-cover" />
-                                                        </div>
-                                                    </div>
-                                                    <div className="col-span-3">
-                                                        <div>
-                                                            <p className='text-white uppercase'>{incomingVote.candidate.candidate.first_name} {incomingVote.candidate.candidate.middle_name}</p>
-                                                            <p className='text-white text-2xl font-bold uppercase'>{incomingVote.candidate.candidate.last_name}</p>
-                                                        </div>
-                                                    </div>
-                                                    <div className="col-span-1 flex items-center justify-center">
-                                                        <div>
-                                                            <div className="h-10 w-10 rounded flex justify-center items-center overflow-hidden">
-                                                                <img src={`${process.env.REACT_APP_BASE_URL}${incomingVote.candidate.candidate.party.party_logo}`} alt="Party" className="rounded object-cover" />
-                                                            </div>
-                                                            <p className='text-black text-lg font-bold text-center uppercase'>{incomingVote.candidate.candidate.party.party_initial}</p>
-                                                        </div>
-                                                    </div>
-                                                    <div className="col-span-5 rounded bg-white bg-opacity-15 p-1">
-                                                        <div className='grid grid-cols-2'>
-                                                            <div className='col-span-1 ml-2'>
-                                                                <p className='text-white text-lg font-bold uppercase'>{incomingVote.polling_station.polling_station_name}</p>
-                                                                <p className='text-white text-sm'>Polling Station</p>
-                                                            </div>
-                                                            <div className='col-span-1 text-center items-center justify-center'>
-                                                                <p className='text-white'>{incomingVote.total_votes} votes</p>
-                                                                <p className='text-white text-xl font-bold'>{incomingVote.total_votes_percent}%</p>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </motion.div>
-                                    ))}
-                                </div>
-                            </div>
-
-
-
-                            <p className='text-white font-bold text-center mt-4' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>PARLIAMENTARY REALTIME</p>
-
-                            <div className="flex w-full h-1/2 mt-3">
-                                <div className="w-full h-full overflow-auto hide-scrollbar pb-[100px]" ref={listContainerRef2}>
-                                    {incomingParliamentaryVotes && [...incomingParliamentaryVotes].map((incomingParliamentaryVote, index) => (
-                                        <motion.div key={index}
-                                            initial={{ opacity: 0, y: -20 }}
-                                            animate={{ opacity: 1, y: 0 }}
-                                            transition={{ duration: 1, ease: "easeOut", delay: 0.4 }}
-                                            className="bg-red-500 bg-opacity-25 backdrop-blur-lg rounded-lg flex items-center justify-center p-3 w-full mb-3" style={{ boxShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>
-                                            {incomingParliamentaryVote.candidate && (
-                                                <div className="grid grid-cols-5 gap-1 ">
-                                                    <div className="col-span-1">
-                                                        <div className="h-15 w-15 rounded-2xl flex justify-center items-center overflow-hidden">
-                                                            <img src={`${process.env.REACT_APP_BASE_URL}${incomingParliamentaryVote.candidate.candidate.photo}`} alt="Candidate" className="rounded object-cover" />
-                                                        </div>
-                                                    </div>
-                                                    <div className="col-span-3">
-                                                        <div>
-                                                            <p className='text-white uppercase'>{incomingParliamentaryVote.candidate.candidate.first_name} {incomingParliamentaryVote.candidate.candidate.middle_name}</p>
-                                                            <p className='text-white text-2xl font-bold uppercase'>{incomingParliamentaryVote.candidate.candidate.last_name}</p>
-                                                        </div>
-                                                    </div>
-                                                    <div className="col-span-1 flex items-center justify-center">
-                                                        <div>
-                                                            <div className="h-10 w-10 rounded flex justify-center items-center overflow-hidden">
-                                                                <img src={`${process.env.REACT_APP_BASE_URL}${incomingParliamentaryVote.candidate.candidate.party.party_logo}`} alt="Party" className="rounded object-cover" />
-                                                            </div>
-                                                            <p className='text-black text-lg font-bold text-center uppercase'>{incomingParliamentaryVote.candidate.candidate.party.party_initial}</p>
-                                                        </div>
-                                                    </div>
-                                                    <div className="col-span-5 rounded bg-white bg-opacity-15 p-1">
-                                                        <div className='grid grid-cols-2'>
-                                                            <div className='col-span-1 ml-2'>
-                                                                <p className='text-white text-lg font-bold uppercase'>{incomingParliamentaryVote.polling_station.polling_station_name}</p>
-                                                                <p className='text-white text-sm'>Polling Station</p>
-                                                            </div>
-                                                            <div className='col-span-1 text-center items-center justify-center'>
-                                                                <p className='text-white'>{incomingParliamentaryVote.total_votes} votes</p>
-                                                                <p className='text-white text-xl font-bold'>{incomingParliamentaryVote.total_votes_percent}%</p>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </motion.div>
-                                    ))}
-                                </div>
-                            </div>
+                <section
+                    className={`rounded-2xl border bg-gradient-to-br from-slate-900/80 to-slate-900/40 p-6 shadow-xl transition ${highlightUpdate ? 'border-emerald-400/70 shadow-emerald-500/30' : 'border-white/10'}`}
+                >
+                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                        <div>
+                            <p className="text-sm uppercase tracking-wide text-emerald-300">{latestUpdate?.scope?.name || 'Awaiting data'}</p>
+                            <h2 className="text-2xl font-semibold">{leader?.name || 'No leader yet'}</h2>
+                        </div>
+                        <div className="text-right text-sm text-white/60">
+                            <p>Updated {formattedTimestamp}</p>
+                            <p>{history.length} event{history.length === 1 ? '' : 's'} archived</p>
                         </div>
                     </div>
 
-                </div>
+                    <div className="mt-6 grid gap-6 md:grid-cols-3">
+                        <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                            <h3 className="text-sm font-semibold text-white/80">Vote share</h3>
+                            <p className="mt-2 text-3xl font-bold text-white">{percentFormatter.format(leader?.vote_share || 0)}</p>
+                            <p className="text-sm text-emerald-300">{formatDelta(latestUpdate?.vote_share_delta)}</p>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                            <h3 className="text-sm font-semibold text-white/80">Total votes</h3>
+                            <p className="mt-2 text-3xl font-bold text-white">{numberFormatter.format(leader?.total_votes || 0)}</p>
+                            <p className="text-sm text-white/60">Turnout change {numberFormatter.format(latestUpdate?.turnout_change || 0)}</p>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                            <h3 className="text-sm font-semibold text-white/80">Runner up</h3>
+                            <p className="mt-2 text-xl font-semibold text-white">{runnerUp?.name || '—'}</p>
+                            <p className="text-sm text-white/60">{runnerUp ? percentFormatter.format(runnerUp.vote_share || 0) : '—'}</p>
+                        </div>
+                    </div>
+
+                    <div className="mt-6 grid gap-6 md:grid-cols-2">
+                        <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                            <h3 className="text-sm font-semibold text-white/80">Reporting progress</h3>
+                            <p className="mt-1 text-2xl font-bold text-white">{percentFormatter.format(totals.reporting_percent || 0)}%</p>
+                            <p className="text-sm text-white/60">{numberFormatter.format(totals.reporting || 0)} of {numberFormatter.format(totals.total_stations || 0)} polling stations reporting</p>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                            <h3 className="text-sm font-semibold text-white/80">Update history</h3>
+                            <div className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1">
+                                {renderHistory()}
+                            </div>
+                        </div>
+                    </div>
+                </section>
             </div>
         </div>
     );

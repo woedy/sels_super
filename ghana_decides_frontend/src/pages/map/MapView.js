@@ -1,498 +1,407 @@
-import { FaHome, FaSearch, FaBell, FaTh, FaSignOutAlt, FaArrowLeft, FaChevronDown } from 'react-icons/fa';
-import MapGL, { FullscreenControl, GeolocateControl, Layer, Marker, NavigationControl, Popup, Source } from 'react-map-gl';
-import { useEffect, useState, useRef } from 'react';
-import data2 from '../../data/ghana-locations.json';
-import konedu from "../../assets/images/konedu.png";
-import { useNavigate } from 'react-router-dom';
-import { motion } from "framer-motion"
-import MapSideNav from './Components/MapSideNavigator';
-import { baseUrlMedia, baseWsUrl } from '../../Constants';
-import MotionWrapper from './Components/MotionWrapper';
-import PresidentialCandidates from './Components/PresidentialCandidates';
-import ParliamentaryParties from './Components/ParliamentaryParties';
-import RegionNameModal from './Components/RegionNameModal';
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Map, { Layer, NavigationControl, Source } from 'react-map-gl';
+import 'mapbox-gl/dist/mapbox-gl.css';
 
-import { faRedo, faRobot, faMicrochip, faBrain } from '@fortawesome/free-solid-svg-icons';
-import AiModal from './Components/AiModal';
-import ResultStateButton from './Components/ResultStateButton';
+import { baseUrl, baseWsUrl } from '../../Constants';
 
-import * as turf from '@turf/turf';
+const MAPBOX_TOKEN = process.env.REACT_APP_MAPBOX_TOKEN ||
+  'pk.eyJ1IjoiZGVsYWRlbS1waW5nc2hpcCIsImEiOiJjbHRubWF2eTUwOXBiMm1vNnI0MTNjZmNyIn0.c_hBpKu5mroAjOtRHuKb6Q';
+const MAP_STYLE = process.env.REACT_APP_MAP_STYLE || 'mapbox://styles/mapbox/dark-v11';
+const INITIAL_VIEW_STATE = { longitude: -1.023, latitude: 7.9465, zoom: 6 };
+const EMPTY_COLLECTION = { type: 'FeatureCollection', features: [] };
 
+const formatNumber = (value) =>
+  typeof value === 'number' ? value.toLocaleString('en-US') : '—';
+
+const formatPercent = (value) =>
+  typeof value === 'number' ? `${value.toFixed(1)}%` : '—';
+
+const formatTimestamp = (value) => {
+  if (!value) {
+    return '—';
+  }
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }).format(new Date(value));
+  } catch (error) {
+    return value;
+  }
+};
 
 const MapView = () => {
-    const [showModal, setShowModal] = useState(false); // State to manage modal visibility
-    const [showRegionNameModal, setShowDisplayNameModal] = useState(false); // State to manage modal visibility
-    const [showAiModal, setShowAiModal] = useState(false);
+  const [electionId, setElectionId] = useState(null);
+  const [selectedRegion, setSelectedRegion] = useState(null);
+  const [selectedConstituency, setSelectedConstituency] = useState(null);
+  const [payload, setPayload] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [wsStatus, setWsStatus] = useState('disconnected');
 
-    const mapRef = useRef(null); // Reference to the MapGL component
-    const navigate = useNavigate();
+  const wsRef = useRef(null);
+  const reconnectTimer = useRef(null);
+  const latestSubscription = useRef({ scope: 'national', scopeId: null });
 
-    const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const featureCollection = useMemo(
+    () => payload?.feature_collection ?? EMPTY_COLLECTION,
+    [payload]
+  );
+  const summary = payload?.summary ?? {};
+  const scopeName = payload?.scope?.name ?? 'National';
+  const candidates = payload?.candidates ?? [];
+  const features = payload?.features ?? [];
+  const options = payload?.options ?? {};
 
-    const [resultState, setResultState] = useState("General");
-    const [regionName, setRegionName] = useState("All Regions");
-    const [electionLevel, setElectionLevel] = useState("Presidential");
-    const [electionYear, setElectionYear] = useState("2024");
-    const [candidates, setCandidates] = useState([]);
-    const [regionNameList, setDisplayNameList] = useState([]);
-    const [parlParties, setParlParties] = useState({});
-    const [selectedYear, setSelectedYear] = useState(null);
+  const cleanupSocket = useCallback(() => {
+    if (reconnectTimer.current) {
+      clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+  }, []);
 
-    const [regionGeojson, setRegionGeojson] = useState({});
+  const fetchPayload = useCallback(
+    async (targetElectionId, targetScope, targetScopeId) => {
+      setIsLoading(true);
+      setError('');
 
+      try {
+        const params = new URLSearchParams();
+        if (targetElectionId) {
+          params.set('election_id', targetElectionId);
+        }
+        if (targetScope) {
+          params.set('scope', targetScope);
+        }
+        if (targetScopeId) {
+          params.set('scope_id', targetScopeId);
+        }
+        const query = params.toString();
+        const response = await fetch(
+          `${baseUrl}api/elections/map/payload/${query ? `?${query}` : ''}`,
+          {
+            headers: {
+              Accept: 'application/json',
+            },
+          }
+        );
+        const body = await response.json().catch(() => null);
+        if (!response.ok) {
+          const detail = body && body.detail ? body.detail : 'Unable to load map data.';
+          throw new Error(detail);
+        }
 
-    const toggleAIModal = () => {
-        setShowAiModal(!showAiModal);
-    };
+        const data = body ?? {};
+        setPayload(data);
+        setElectionId(data.election?.id ?? null);
+        const newScopeId = data.scope?.id ?? null;
+        latestSubscription.current = { scope: data.scope?.level ?? 'national', scopeId: newScopeId };
 
+        if ((data.scope?.level ?? 'national') === 'national') {
+          setSelectedRegion(null);
+          setSelectedConstituency(null);
+        } else if (data.scope?.level === 'region') {
+          setSelectedRegion(newScopeId);
+          setSelectedConstituency(null);
+        } else if (data.scope?.level === 'constituency') {
+          setSelectedConstituency(newScopeId);
+        }
+      } catch (err) {
+        setError(err.message || 'Unable to load map data.');
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    []
+  );
 
-    const toggleModal = () => {
-        setShowHistoryModal(!showHistoryModal);
-    };
+  useEffect(() => {
+    fetchPayload(null, 'national', null);
+    return () => cleanupSocket();
+  }, [fetchPayload, cleanupSocket]);
 
-    useEffect(() => {
+  useEffect(() => {
+    if (!electionId || !MAPBOX_TOKEN) {
+      return () => undefined;
+    }
 
-        // Add event listener to detect clicks outside of the modal
-        window.addEventListener("click", handleOutsideClick);
+    let cancelled = false;
 
-        // Cleanup the event listener on component unmount
-        return () => {
-            window.removeEventListener("click", handleOutsideClick);
-        };
-    }, []);
+    const connect = () => {
+      if (cancelled) {
+        return;
+      }
+      const socket = new WebSocket(`${baseWsUrl}ws/live-map-consumer/`);
+      wsRef.current = socket;
 
+      socket.onopen = () => {
+        setWsStatus('connected');
+        const { scope: currentScope, scopeId: currentScopeId } = latestSubscription.current;
+        if (electionId) {
+          socket.send(
+            JSON.stringify({
+              action: 'subscribe',
+              election_id: electionId,
+              scope: currentScope,
+              scope_id: currentScopeId,
+            })
+          );
+        }
+      };
 
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === 'snapshot' || message.type === 'update') {
+            setPayload(message.payload);
+            const payloadScope = message.payload?.scope?.level ?? 'national';
+            const payloadScopeId = message.payload?.scope?.id ?? null;
+            latestSubscription.current = { scope: payloadScope, scopeId: payloadScopeId };
 
-    useEffect(() => {
-        const socket = new WebSocket(process.env.REACT_APP_BASE_URL_WS_URL  + 'ws/live-map-consumer/');
-
-        socket.onopen = () => {
-            console.log('WebSocket connected');
-
-            const payload = {
-                command: 'get_live_map_data',
-            };
-
-            socket.send(JSON.stringify(payload));
-        };
-
-
-        socket.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.payload && data.payload.message === 'Successful') {
-                setResultState(data.payload.data.result_state);
-                setRegionName(data.payload.data.region_name);
-                setElectionLevel(data.payload.data.election_level);
-                setElectionYear(data.payload.data.election_year);
-                setCandidates(data.payload.data.candidates);
-                setDisplayNameList(data.payload.data.display_names_list);
-                setParlParties(data.payload.data.parl_parties);
-                setRegionGeojson(data.payload.data.region_geojson_data)
-                console.log(data.payload)
-
+            if (payloadScope === 'national') {
+              setSelectedRegion(null);
+              setSelectedConstituency(null);
+            } else if (payloadScope === 'region') {
+              setSelectedRegion(payloadScopeId);
+              setSelectedConstituency(null);
+            } else if (payloadScope === 'constituency') {
+              setSelectedConstituency(payloadScopeId);
             }
-        };
-
-        socket.onclose = () => {
-            console.log('WebSocket disconnected');
-        };
-
-        return () => {
-            socket.close();
-        };
-    }, []);
-
-
-
-    const handleOutsideClick = (e) => {
-        // Close the modal if the click is outside of the modal content
-        if (e.target.closest(".bg-white") === null) {
-            setShowModal(false);
-            setShowDisplayNameModal(false);
+          } else if (message.type === 'error') {
+            setError(message.message || 'Unable to load map updates.');
+          }
+        } catch (err) {
+          setError('Malformed message received from server.');
         }
-    };
+      };
 
-
-
-    useEffect(() => {
-        const socket = new WebSocket(baseWsUrl + 'ws/live-map-consumer/');
-
-        socket.onopen = () => {
-            console.log('WebSocket connected');
-
-            const data = {
-                election_year: electionYear,
-                election_level: electionLevel,
-                region_name: regionName,
-                result_state: resultState,
-            };
-
-            console.log('DATAAAAAA connected');
-            console.log(data);
-
-
-
-            const payload = {
-                command: 'get_map_filter_data',
-                data: data
-            };
-
-            socket.send(JSON.stringify(payload));
-        };
-
-        socket.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.payload && data.payload.message === 'Successful') {
-                setResultState(data.payload.data.result_state);
-                setRegionName(data.payload.data.region_name);
-                setElectionLevel(data.payload.data.election_level);
-                setElectionYear(data.payload.data.election_year);
-                setCandidates(data.payload.data.candidates);
-                setDisplayNameList(data.payload.data.display_names_list);
-                setParlParties(data.payload.data.parl_parties);
-                setRegionGeojson(data.payload.data.region_geojson_data)
-
-                console.log(data.payload);
-            }
-        };
-
-        socket.onclose = () => {
-            console.log('WebSocket disconnected');
-        };
-
-        return () => {
-            socket.close();
-        };
-    }, [electionYear, electionLevel, regionName, resultState]);
-
-
-
-    const handleRegionNameClick = (option, e) => {
-        if (regionName !== option) {
-            setRegionName(option);
-            setResultState("Region");
-
+      socket.onclose = () => {
+        setWsStatus('disconnected');
+        if (!cancelled) {
+          reconnectTimer.current = setTimeout(connect, 5000);
         }
+      };
+
+      socket.onerror = () => {
+        setWsStatus('error');
+      };
     };
 
+    connect();
 
-
-
-    const handleElectionLevelClick = (option) => {
-        if (electionLevel !== option) {
-            setElectionLevel(option);
-
+    return () => {
+      cancelled = true;
+      if (reconnectTimer.current) {
+        clearTimeout(reconnectTimer.current);
+        reconnectTimer.current = null;
+      }
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch (err) {
+          // ignore close errors
         }
+        wsRef.current = null;
+      }
     };
-
-
-
-
-
-    const handleResultStateClick = (option) => {
-        if (option == "General") {
-            handleResetClick()
-        }
-        setResultState(option);
-
-    };
-
-
-    const handleElectionYearClick = (year) => {
-        setElectionYear(year);
-        setShowHistoryModal(false); // Close the modal after selecting a year
-    };
-
-    const handleRegionClick = (e) => {
-        const feature = e.features[0];
-        if (feature) {
-            const { region_id, region_name } = feature.properties;
-            console.log('Region ID:', region_id);
-            console.log('Region Name:', region_name);
-    
-            // Check if the clicked region is different from the current regionName
-            if (region_name !== regionName) {
-                // Set the region name in state
-                setResultState("Region");
-                setRegionName(region_name);
-    
-                const bbox = turf.bbox(feature); // Calculate the bounding box of the clicked feature
-                const padding = 0.1; // Padding as a fraction of the map viewport
-    
-                // Calculate the new center point shifted to the right
-                const center = [
-                    (bbox[0] + bbox[2]) / 2 - 0.7, // Shifted to the right by 0.1
-                    (bbox[1] + bbox[3]) / 2 + 0.25
-                ];
-    
-                mapRef.current.fitBounds(
-                    [
-                        [bbox[0] - padding, bbox[1] - padding],
-                        [bbox[2] + padding, bbox[3] + padding]
-                    ],
-                    {
-                        padding: { top: 50, bottom: 50, left: 50, right: 50 }, // Add padding around the bounding box
-                        maxZoom: 16, // Maximum zoom level
-                        pitch: 50, // Set the pitch of the map (0-60 for most use cases)
-                        center: center, // Set the new center point,
-                        transitionDuration: 500, // Transition duration in milliseconds
-                        speed: 1, // Adjust speed for smooth transition
-                        curve: 1, // Adjust curve for smooth transition
-                        essential: true, // Make sure the transition is considered 
-                    }
-                );
-            }
-        }
-    };
-    
-    
-    const handleResetClick = () => {
-
-        setRegionName("All Regions");
-        setResultState("General");
-        mapRef.current.flyTo({
-            center: [-3.9, 8.6], // Adjust to initial center
-            zoom: 6, // Adjust to initial zoom level
-            bearing: 0, // Set bearing to 0 to align the map straight
-            pitch: 0, // Set pitch to 0 to reset any tilt
-            speed: 1, // Adjust speed for smooth transition
-            curve: 1, // Adjust curve for smooth transition
-            essential: true, // Make sure the transition is considered essential
-        });
-    };
-
-    return (
-        <div className="relative h-screen bg-cover bg-no-repeat bg-center flex items-center justify-center" style={{ backgroundImage: `url(${process.env.PUBLIC_URL}/ghana_decides_back.png)`, backgroundSize: 'cover' }}>
-            <div className="absolute inset-0 flex items-center justify-center">
-                <div className="grid grid-cols-15 gap-5 h-screen w-screen ">
-
-
-                    <div className="col-span-11 bg-white bg-opacity-25 backdrop-blur-lg rounded-lg flex items-center justify-center relative">
-
-                        {data2 && (
-                            <MapGL
-                                ref={mapRef} // Assign the mapRef to the MapGL component
-                                mapboxAccessToken="pk.eyJ1IjoiZGVsYWRlbS1waW5nc2hpcCIsImEiOiJjbHRubWF2eTUwOXBiMm1vNnI0MTNjZmNyIn0.c_hBpKu5mroAjOtRHuKb6Q"
-                                initialViewState={{
-                                    longitude: -3.9,
-                                    latitude: 8.6,
-                                    zoom: 6,
-                                }}
-                                style={{ width: "100%", height: "100%" }}
-                                mapStyle="mapbox://styles/deladem-pingship/cluv4uiay004y01p5b7es8xp0"
-                                interactiveLayerIds={['region-fill']} // Specify the layer for interaction
-                                onClick={handleRegionClick}
-                            >
-                                <Source type="geojson" data={data2}>
-                                    <Layer
-                                        id="polygon-fill"
-                                        type="fill"
-                                        paint={{
-                                            'fill-color': '#29465B',
-                                            //'fill-color':"#1F45FC"
-                                            //'fill-opacity': 0.8,
-                                        }}
-                                    />
-                                </Source>
-                                <Source type="geojson" data={regionGeojson}>
-                                    <Layer
-                                        id="region-fill"
-                                        type="fill"
-                                        paint={{
-                                            'fill-color': ['get', 'leading_color'],
-                                            //'fill-color':"#1F45FC"
-                                            'fill-opacity': 0.9,
-                                        }}
-                                    />
-                                    <Layer
-                                        id="region-stroke"
-                                        type="line"
-                                        paint={{
-                                            'line-color': 'white', // Change this to your desired stroke color
-                                            'line-width': 2, // Change this to your desired stroke width
-                                        }}
-                                    />
-
-                                    <Layer
-                                        id="region-label"
-                                        type="symbol"
-                                        layout={{
-                                            'text-field': ['get', 'region_name'],
-                                            'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
-                                            'text-size': 10,
-                                            'text-offset': [0, 0],
-                                            
-                                        }}
-                                        paint={{
-                                            'text-color': 'black',
-                                        
-                                        }}
-                                    />
-                                </Source>
-
-
-                                {/*      <NavigationControl position='bottom-right' />
-                                <GeolocateControl position='bottom-right' />
-                                <FullscreenControl position='bottom-right' /> */}
-                                <div className="grid grid-cols-12 gap-5 h-screen w-screen p-5">
-                                    <MapSideNav />
-
-                                    <div className="col-span-9 rounded-lg flex items-start justify-center">
-                                        <div className='grid grid-cols-2 w-full'>
-
-                                            <div className="col-span-2 bg-black bg-opacity-25 backdrop-blur-lg rounded-lg rounded-lg flex items-start justify-left z-10 p-4 mb-3">
-                                                <div className='grid grid-cols-2 gap-5 w-full '>
-                                                    <div>
-                                                        <p className='text-black text-left text-[15px] font-bold' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>{resultState}</p>
-                                                        <div className='flex flex-row '>
-                                                            <p className='text-white text-left text-2xl font-bold uppercase' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>{regionName}</p>
-
-                                                            <div className='rounded-full p-2 items-center text-sm justify-center ml-2 bg-white bg-opacity-20' style={{ boxShadow: '0px 2px 4px rgba(0, 0, 0, 0.25)' }} onClick={() => setShowDisplayNameModal(true)} >
-                                                                <FaChevronDown className='text-white items-center text-sm justify-center mt-1' />
-
-                                                            </div>
-                                                        </div>
-
-                                                        <p className='text-green-700 text-left text-sm font-bold uppercase' >{electionLevel}</p>
-                                                    </div>
-
-                                                    <div className='flex items-center justify-center'>
-                                                        <p className='text-black text-left text-[40px] font-black' style={{ textShadow: '0px 4px 4px rgba(0, 0, 0, 0.25)' }}>ELECTION {electionYear}</p>
-                                                    </div>
-
-                                                </div>
-
-
-                                            </div>
-
-
-
-
-                                            <MotionWrapper>
-                                                {electionLevel === 'Presidential' ? (
-                                                    <PresidentialCandidates candidates={candidates} baseUrlMedia={process.env.REACT_APP_BASE_URL} state={resultState}/>
-                                                ) : (
-                                                    <ParliamentaryParties parlParties={parlParties} baseUrlMedia={process.env.REACT_APP_BASE_URL} />
-                                                )}
-                                            </MotionWrapper>
-
-
-
-                                        </div>
-                                    </div>
-
-
-
-                                    <div className='col-span-2' style={{ zIndex: 1000 }}>
-                                        <div className='grid grid-cols-2'>
-                                            <div className='mr-2'>
-                                                <div className={`rounded-full ${electionLevel === 'Presidential' ? 'bg-blue-500' : 'bg-gray-500'} shadow-lg p-2 flex items-center justify-center`} onClick={() => handleElectionLevelClick('Presidential')}>
-                                                    <p className="text-white text-center text-sm">Presidential</p>
-                                                </div>
-                                            </div>
-
-                                            <div>
-                                                <div className={`rounded-full ${electionLevel === 'Parliamentary' ? 'bg-blue-500' : 'bg-gray-500'} shadow-lg p-2 flex items-center justify-center`} onClick={() => handleElectionLevelClick('Parliamentary')}>
-                                                    <p className="text-white text-center text-sm">Parliamentary</p>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div className='flex justify-end '>
-                                            <div className="w-40 rounded-full bg-red-500 shadow-lg p-2 flex items-center justify-center mt-2">
-                                                <button className="text-white" onClick={toggleModal}>History</button>
-                                            </div>
-                                        </div>
-
-                                        <br />
-                                        {/* 
-                                        <div>
-                                            <ResultStateButton resultState={resultState} text="General" onClick={handleResultStateClick} />
-                                            <ResultStateButton resultState={resultState} text="Region" onClick={handleResultStateClick} />
-                                            <ResultStateButton resultState={resultState} text="Constituency" onClick={handleResultStateClick} />
-                                            <ResultStateButton resultState={resultState} text="Electoral Area" onClick={handleResultStateClick} />
-                                            <ResultStateButton resultState={resultState} text="Polling Station" onClick={handleResultStateClick} />
-                                        </div> */}
-
-
-                                        <div className="absolute bottom-4 right-4 flex justify-end">
-
-                                            <div
-                                                className={`rounded-full w-16 h-16 bg-green-500 shadow-lg flex items-center justify-center mb-[100px]`}
-                                                onClick={toggleAIModal}
-                                            >
-                                                <FontAwesomeIcon icon={faRobot} className="text-white" size="2x" />
-
-
-
-                                            </div>
-
-
-                                        </div>
-
-
-                                        <div className="absolute bottom-4 right-4 flex justify-end">
-
-                                            <div
-                                                className={`rounded-full w-16 h-16 bg-green-500 shadow-lg flex items-center justify-center`}
-                                                onClick={handleResetClick}
-                                            >
-                                                <FontAwesomeIcon icon={faRedo} className="text-white" size="2x" />
-                                            </div>
-                                        </div>
-
-                                        {showHistoryModal && (
-                                            <div className="fixed w-[120px] top-[120px] right-[50px] rounded h-[450px] bg-black bg-opacity-50 flex items-center justify-center z-50 animate-fade-in animate-fade-out">
-
-                                                <div>
-
-                                                    <p className="text-white text-center text-sm m-5" onClick={() => handleElectionYearClick("1992")}>1992</p>
-                                                    <p className="text-white text-center text-sm m-5" onClick={() => handleElectionYearClick("1996")}>1996</p>
-                                                    <p className="text-white text-center text-sm m-5" onClick={() => handleElectionYearClick("2000")}>2000</p>
-                                                    <p className="text-white text-center text-sm m-5" onClick={() => handleElectionYearClick("2000R")}>2000R</p>
-                                                    <p className="text-white text-center text-sm m-5" onClick={() => handleElectionYearClick("2004")}>2004</p>
-                                                    <p className="text-white text-center text-sm m-5" onClick={() => handleElectionYearClick("2008")}>2008</p>
-                                                    <p className="text-white text-center text-sm m-5" onClick={() => handleElectionYearClick("2008R")}>2008R</p>
-                                                    <p className="text-white text-center text-sm m-5" onClick={() => handleElectionYearClick("2012")}>2012</p>
-                                                    <p className="text-white text-center text-sm m-5" onClick={() => handleElectionYearClick("2016")}>2016</p>
-                                                    <p className="text-white text-center text-sm m-5" onClick={() => handleElectionYearClick("2020")}>2020</p>
-                                                    <p className="text-white text-center text-sm m-5" onClick={() => handleElectionYearClick("2024")}>2024</p>
-
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-
-
-
-                                </div>
-
-
-
-
-
-
-
-                            </MapGL>
-                        )}
-                    </div>
-                </div>
-            </div>
-
-
-            <RegionNameModal
-                showRegionNameModal={showRegionNameModal}
-                regionNameList={regionNameList}
-                handleRegionNameClick={handleRegionNameClick}
-            />
-
-            {showAiModal && <AiModal onClose={toggleAIModal} />}
-
-
-
+  }, [electionId]);
+
+  const handleRegionChange = async (event) => {
+    const value = event.target.value || null;
+    setSelectedRegion(value);
+    setSelectedConstituency(null);
+
+    const nextScope = value ? 'region' : 'national';
+    await fetchPayload(electionId, nextScope, value);
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && electionId) {
+      wsRef.current.send(
+        JSON.stringify({
+          action: 'subscribe',
+          election_id: electionId,
+          scope: value ? 'region' : 'national',
+          scope_id: value,
+        })
+      );
+    }
+  };
+
+  const handleConstituencyChange = async (event) => {
+    const value = event.target.value || null;
+    setSelectedConstituency(value);
+
+    const nextScope = value ? 'constituency' : 'region';
+    const nextScopeId = value ? value : selectedRegion;
+    await fetchPayload(electionId, nextScope, nextScopeId);
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && electionId) {
+      wsRef.current.send(
+        JSON.stringify({
+          action: 'subscribe',
+          election_id: electionId,
+          scope: nextScope,
+          scope_id: nextScopeId,
+        })
+      );
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-white">
+      <header className="px-6 py-4 border-b border-slate-700 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Ghana 2024 Live Map</h1>
+          <p className="text-sm text-slate-300">Viewing: {scopeName}</p>
+          <p className="text-sm text-slate-300" aria-live="polite">
+            Updated {formatTimestamp(summary.updated_at)} · Reporting {formatNumber(summary.reporting)} of{' '}
+            {formatNumber(summary.total_stations)} polling stations ({formatPercent(summary.reporting_percent)})
+          </p>
         </div>
-    );
+        <div className="flex gap-3 text-sm">
+          <div className={`px-3 py-1 rounded-full ${wsStatus === 'connected' ? 'bg-emerald-600' : wsStatus === 'error' ? 'bg-red-600' : 'bg-slate-700'}`}>
+            WebSocket: {wsStatus}
+          </div>
+          {isLoading && <div className="px-3 py-1 rounded-full bg-slate-700 animate-pulse">Loading…</div>}
+        </div>
+      </header>
+
+      <main className="grid gap-6 px-6 py-6 lg:grid-cols-[2fr,1fr]">
+        <section className="relative min-h-[520px] rounded-xl overflow-hidden border border-slate-700">
+          {!MAPBOX_TOKEN && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-900/90">
+              <p className="max-w-md text-center text-lg">
+                Provide <code>REACT_APP_MAPBOX_TOKEN</code> to render the interactive map.
+              </p>
+            </div>
+          )}
+          {isLoading && (
+            <div className="absolute inset-0 z-10 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center">
+              <div className="h-16 w-16 rounded-full border-4 border-slate-500 border-t-white animate-spin" aria-hidden />
+              <span className="sr-only">Loading map data…</span>
+            </div>
+          )}
+          <Map
+            mapboxAccessToken={MAPBOX_TOKEN}
+            mapStyle={MAP_STYLE}
+            initialViewState={INITIAL_VIEW_STATE}
+            style={{ width: '100%', height: '100%' }}
+          >
+            <Source id="regions" type="geojson" data={featureCollection}>
+              <Layer
+                id="region-fill"
+                type="fill"
+                paint={{
+                  'fill-color': ['coalesce', ['get', 'leader_color'], '#1f2937'],
+                  'fill-opacity': 0.7,
+                }}
+              />
+              <Layer
+                id="region-outline"
+                type="line"
+                paint={{ 'line-color': '#ffffff', 'line-width': 1 }}
+              />
+            </Source>
+            <NavigationControl position="bottom-right" />
+          </Map>
+        </section>
+
+        <aside className="space-y-4">
+          <div className="rounded-xl border border-slate-700 bg-slate-800/70 p-4">
+            <h2 className="text-lg font-semibold mb-3">Filters</h2>
+            <div className="space-y-4">
+              <label className="block">
+                <span className="text-sm text-slate-300">Region</span>
+                <select
+                  value={selectedRegion ?? ''}
+                  onChange={handleRegionChange}
+                  className="mt-1 w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-white focus:border-emerald-500 focus:outline-none"
+                >
+                  <option value="">All regions</option>
+                  {(options.regions ?? []).map((regionOption) => (
+                    <option key={regionOption.id} value={regionOption.id}>
+                      {regionOption.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block">
+                <span className="text-sm text-slate-300">Constituency</span>
+                <select
+                  value={selectedConstituency ?? ''}
+                  onChange={handleConstituencyChange}
+                  className="mt-1 w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-white focus:border-emerald-500 focus:outline-none"
+                  disabled={!selectedRegion || (options.constituencies ?? []).length === 0}
+                >
+                  <option value="">All constituencies</option>
+                  {(options.constituencies ?? []).map((constituencyOption) => (
+                    <option key={constituencyOption.id} value={constituencyOption.id}>
+                      {constituencyOption.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-700 bg-slate-800/70 p-4">
+            <h2 className="text-lg font-semibold mb-3">Leading Candidates</h2>
+            <ul className="space-y-3">
+              {candidates.length === 0 && <li className="text-sm text-slate-400">No results yet.</li>}
+              {candidates.map((candidate) => (
+                <li key={candidate.candidate_id} className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium">{candidate.name || 'Unknown'}</p>
+                    <p className="text-xs text-slate-300 uppercase tracking-wide">
+                      {candidate.party_name || candidate.party || 'Independent'}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-lg font-semibold">{formatNumber(candidate.total_votes)}</p>
+                    <p className="text-xs text-slate-300">{formatPercent(candidate.vote_share)}</p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="rounded-xl border border-slate-700 bg-slate-800/70 p-4">
+            <h2 className="text-lg font-semibold mb-3">Areas reporting</h2>
+            <ul className="max-h-64 space-y-3 overflow-auto pr-2">
+              {features.length === 0 && <li className="text-sm text-slate-400">Awaiting first submissions.</li>}
+              {features.map((feature) => (
+                <li key={feature.id} className="flex justify-between gap-4 border-b border-slate-700 pb-2 last:border-b-0 last:pb-0">
+                  <div>
+                    <p className="font-medium text-sm">{feature.name}</p>
+                    <p className="text-xs text-slate-400">
+                      {feature.leader?.name ? `Lead: ${feature.leader.name} (${feature.leader.party})` : 'No leader yet'}
+                    </p>
+                  </div>
+                  <div className="text-right text-xs text-slate-300">
+                    <p>{formatNumber(feature.reporting?.reporting)} / {formatNumber(feature.reporting?.total_stations)}</p>
+                    <p>{formatPercent(feature.reporting?.reporting_percent)}</p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </aside>
+      </main>
+
+      {error && (
+        <div className="px-6 pb-6" role="alert" aria-live="assertive">
+          <div className="rounded-lg border border-red-500 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+            {error}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 };
 
 export default MapView;

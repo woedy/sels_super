@@ -10,6 +10,8 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.0/ref/settings/
 """
 import os
+import sys
+from datetime import timedelta
 from pathlib import Path
 from distutils.util import strtobool
 
@@ -59,6 +61,7 @@ INSTALLED_APPS = [
 
     'rest_framework',
     'rest_framework.authtoken',
+    'rest_framework_simplejwt',
 
     'accounts',
     'user_profile',
@@ -71,7 +74,8 @@ INSTALLED_APPS = [
     "search",
     "chat",
     "homepage",
-    "settings"
+    "settings",
+    "monitoring.apps.MonitoringConfig",
 ]
 
 
@@ -79,17 +83,14 @@ AUTH_USER_MODEL = 'accounts.User'
 
 
 MIDDLEWARE = [
-
     "django.middleware.security.SecurityMiddleware",
+    'corsheaders.middleware.CorsMiddleware',
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-
-    'django.middleware.common.CommonMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
 ]
 
 ROOT_URLCONF = "ghana_decides_proj.urls"
@@ -115,14 +116,48 @@ ASGI_APPLICATION = "ghana_decides_proj.asgi.application"
 
 # Channels / Redis
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [REDIS_URL],
+_channel_backend = os.getenv("USE_IN_MEMORY_CHANNEL_LAYER")
+_running_tests = "test" in sys.argv
+TESTING = _running_tests
+if _channel_backend == "1" or _running_tests:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer",
+        }
+    }
+else:
+    redis_url = os.getenv("REDIS_URL")
+    if redis_url:
+        hosts = [redis_url]
+    else:
+        redis_host = os.getenv("REDIS_HOST", "redis")
+        redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        hosts = [(redis_host, redis_port)]
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": hosts,
+            },
         },
-    },
-}
+    }
+
+_cache_url = os.getenv("CACHE_URL")
+if _cache_url:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": _cache_url,
+            "TIMEOUT": None,
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "sels-default",
+        }
+    }
 
 
 # Database
@@ -163,6 +198,32 @@ else:
 
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", REDIS_URL)
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", REDIS_URL)
+
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'rest_framework.authentication.TokenAuthentication',
+    ),
+    'DEFAULT_THROTTLE_CLASSES': (
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+        'rest_framework.throttling.ScopedRateThrottle',
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': os.getenv('DRF_THROTTLE_ANON', '100/hour'),
+        'user': os.getenv('DRF_THROTTLE_USER', '1000/hour'),
+        'login': os.getenv('DRF_THROTTLE_LOGIN', '10/minute'),
+        'submission': os.getenv('DRF_THROTTLE_SUBMISSION', '60/hour'),
+        'audit': os.getenv('DRF_THROTTLE_AUDIT', '30/hour'),
+    },
+}
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'AUTH_HEADER_TYPES': ('Bearer',),
+}
 
 
 
@@ -221,9 +282,18 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 FCM_SERVER_KEY = os.getenv('FCM_SERVER_KEY', '')
 
-# CORS
-CORS_ALLOWED_ORIGINS = [o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
-CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
+# CORS & CSRF
+_cors_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
+CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_origins.split(",") if o.strip()]
+
+_cors_allow_all = os.getenv("CORS_ALLOW_ALL_ORIGINS")
+if DEBUG and not CORS_ALLOWED_ORIGINS and _cors_allow_all is None:
+    CORS_ALLOW_ALL_ORIGINS = True
+else:
+    CORS_ALLOW_ALL_ORIGINS = bool(strtobool(_cors_allow_all or "False"))
+
+CORS_ALLOW_CREDENTIALS = True
+CORS_URLS_REGEX = r"^/api/.*$"
 
 # CSRF trusted origins (comma-separated, must include scheme)
 CSRF_TRUSTED_ORIGINS = [o.strip() for o in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if o.strip()]
@@ -235,31 +305,12 @@ app.config_from_object('django.conf:settings', namespace='CELERY')
 app.autodiscover_tasks()
 
 
-# CHANNEL_LAYERS = {
-#     "default": {
-#         "BACKEND": "channels_redis.core.RedisChannelLayer",
-#         "CONFIG": {
-#             "hosts": [("127.0.0.1", 6379)],
-#         },
-#     },
-# }
-
-
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [("redis", 6379)],
-        },
-    },
-}
-
-
-
-CORS_ALLOW_ALL_ORIGINS = True
-CORS_ALLOWED_ORIGINS = []
-
-CORS_ALLOW_CREDENTIALS = True
-
-
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
+SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '0' if DEBUG else '31536000'))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = bool(strtobool(os.getenv('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'True')))
+SECURE_HSTS_PRELOAD = bool(strtobool(os.getenv('SECURE_HSTS_PRELOAD', 'True')))
+SESSION_COOKIE_SECURE = bool(strtobool(os.getenv('SESSION_COOKIE_SECURE', 'False' if DEBUG else 'True')))
+CSRF_COOKIE_SECURE = bool(strtobool(os.getenv('CSRF_COOKIE_SECURE', 'False' if DEBUG else 'True')))
+X_FRAME_OPTIONS = 'DENY'

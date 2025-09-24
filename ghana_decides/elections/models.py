@@ -1,5 +1,10 @@
+import uuid
+
+from django.conf import settings
 from django.db import models
+from django.db.models import Q
 from django.db.models.signals import pre_save
+from django.utils import timezone
 
 from candidates.models import PresidentialCandidate, ParliamentaryCandidate
 from ghana_decides_proj.utils import unique_election_id_generator, unique_election_prez_id_generator, \
@@ -223,3 +228,59 @@ class ParliamentaryCandidatePollingStationVote(models.Model):
     active = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class PollingStationResultSubmission(models.Model):
+    class Status(models.TextChoices):
+        RECEIVED = "received", "Received"
+        PROCESSING = "processing", "Processing"
+        PROCESSED = "processed", "Processed"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    election = models.ForeignKey(Election, on_delete=models.PROTECT, related_name="polling_station_submissions")
+    polling_station = models.ForeignKey(PollingStation, on_delete=models.PROTECT, related_name="result_submissions")
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="polling_station_result_submissions",
+    )
+    idempotency_key = models.CharField(max_length=255)
+    source = models.CharField(max_length=50, default="data_admin")
+    raw_payload = models.JSONField()
+    structured_payload = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.RECEIVED)
+    error_message = models.TextField(blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["submitted_by", "idempotency_key"],
+                name="unique_user_idempotency_key",
+            ),
+            models.UniqueConstraint(
+                fields=["election", "polling_station"],
+                condition=Q(status="processed"),
+                name="unique_processed_submission_per_station_election",
+            ),
+        ]
+        ordering = ("-created_at",)
+
+    def mark_processing(self):
+        if self.status != self.Status.PROCESSING:
+            self.status = self.Status.PROCESSING
+            self.save(update_fields=["status", "updated_at"])
+
+    def mark_processed(self):
+        self.status = self.Status.PROCESSED
+        self.error_message = ""
+        self.processed_at = timezone.now()
+        self.save(update_fields=["status", "error_message", "processed_at", "updated_at"])
+
+    def mark_failed(self, error_message: str):
+        self.status = self.Status.FAILED
+        self.error_message = error_message
+        self.save(update_fields=["status", "error_message", "updated_at"])

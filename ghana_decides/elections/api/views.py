@@ -3,13 +3,15 @@ from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.decorators import authentication_classes, api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from activities.models import AllActivity
 from elections.api.serializers import AllElectionSerializer, ElectionDetailSerializer, \
     PresidentialCandidateRegionalVoteSerializer, ElectionPresidentialCandidateSerializer
 from elections.models import Election, PresidentialCandidateRegionalVote
+from elections.services.public_map_payloads import build_map_payload
 from candidates.models import Party
 from regions.models import RegionLayerCoordinate
 
@@ -292,3 +294,25 @@ def get_regional_presidential_votes(request):
     payload['data'] = region_data_list
 
     return Response(payload, status=status.HTTP_200_OK)
+
+class PublicMapPayloadView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+
+    def get(self, request):
+        election_id = request.query_params.get('election_id')
+        scope = request.query_params.get('scope', 'national')
+        scope_id = request.query_params.get('scope_id')
+
+        if not election_id:
+            election = Election.objects.order_by('-year').first()
+            if not election:
+                return Response({"detail": "No elections available."}, status=status.HTTP_404_NOT_FOUND)
+            election_id = election.election_id
+
+        try:
+            payload = build_map_payload(election_id, scope=scope, scope_id=scope_id)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(payload, status=status.HTTP_200_OK)

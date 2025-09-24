@@ -1,18 +1,18 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:ghd_correspondent/Auth/Register/select_region.dart';
 import 'package:ghd_correspondent/SplashScreen/splash_screen.dart';
 import 'package:ghd_correspondent/theme.dart';
 
 import 'constants.dart';
+import 'services/app_services.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  SystemChrome.setPreferredOrientations(
-          [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown])
-      .then((value) => {runApp(MyApp())});
+  await AppServices.instance.initialize();
+  await SystemChrome.setPreferredOrientations(
+      [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]);
+  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {

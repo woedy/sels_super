@@ -1,7 +1,10 @@
 import 'dart:ui';
 
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/services.dart';
+
+import 'services/app_services.dart';
+import 'services/api_environment.dart';
+import 'services/auth_storage.dart';
 
 const ghPrimary = Color(0xffF47D7B);
 const ghWhite = Color(0x88ffffff);
@@ -11,23 +14,28 @@ const bodyText1 = Color(0xffffffff);
 const bodyText2 = Color(0xffffffff);
 const clay = Color(0xffa499b3);
 
-//const hostName = "http://192.168.43.121:8000/api/";
-//const hostNameMedia = "http://192.168.43.121:8000";
+ApiEnvironment get apiEnvironment => AppServices.instance.apiEnvironment;
 
-//const hostName = "http://192.168.43.223:8000/api/";
-//const hostNameMedia = "http://192.168.43.223:8000";
+AuthStorage get authStorage => AppServices.instance.authStorage;
 
-const hostName = "http://92.112.194.239:5050/api/";
-const hostNameMedia = "http://92.112.194.239:5050";
+String get apiBaseUrl => apiEnvironment.apiBaseUrl;
+
+String get mediaBaseUrl => apiEnvironment.mediaBaseUrl;
+
+String get hostName => apiBaseUrl;
+
+String get hostNameMedia => mediaBaseUrl;
+
+Uri buildApiUri(String path) => apiEnvironment.resolveApi(path);
+
+String resolveMediaUrl(String path) => apiEnvironment.resolveMedia(path);
 
 Future<String?> getApiPref() async {
-  SharedPreferences prefs = await SharedPreferences.getInstance();
-  return prefs.getString("API_Key");
+  return authStorage.readAccessToken();
 }
 
 Future<String?> getUserIDPref() async {
-  SharedPreferences prefs = await SharedPreferences.getInstance();
-  return prefs.getString("USER_ID");
+  return AppServices.instance.sharedPreferences.getString("USER_ID");
 }
 
 class PasteTextInputFormatter extends TextInputFormatter {
